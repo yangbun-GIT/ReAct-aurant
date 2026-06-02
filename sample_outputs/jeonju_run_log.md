@@ -6,7 +6,36 @@
 .\.venv\Scripts\python react_client.py --query "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘." --data-source auto --trace logs\trace_jeonju.jsonl
 ```
 
-실행 결과:
+## Agent 판단 과정 요약
+
+| 단계 | Agent | Pattern | 판단 및 수행 내용 |
+| --- | --- | --- | --- |
+| 1 | Coordinator Agent | Plan-and-Solve | 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 분해하고 MCP 서버 연결을 준비 |
+| 2 | Context Specialist Agent | Tool Use / Memory | 날씨, 사용자 선호도, 단기 메모리 도구 호출 |
+| 3 | Public Data Agent | ReAct | TourAPI 공공데이터에서 전주 객사 근처 음식점 후보 검색 |
+| 4 | Public Data Agent | Tool Use | 상위 후보의 상세 정보 조회 |
+| 5 | Public Data Agent | ReAct | 주소, 거리, 상세정보 충실도, 사용자 조건 일치도로 후보 정렬 |
+| 6 | Reflection Reviewer | Reflection | TourAPI에는 평점/리뷰 수가 없다는 한계를 확인하고 임의 수치를 생성하지 않도록 검토 |
+| 7 | Coordinator Agent | Final Answer | Observation과 Reflection 결과를 종합해 최종 추천 생성 |
+
+## 도구 호출 요약
+
+| 순서 | MCP 서버 | 도구 | 주요 입력값 | Observation 요약 |
+| --- | --- | --- | --- | --- |
+| 1 | `env_context_server.py` | `get_weather_context` | `location=전주 객사` | 전주 객사 기준 날씨와 음식 힌트 수신 |
+| 2 | `env_context_server.py` | `get_user_profile` | `user_id=default` | 가격 민감도, 선호 음식, 도보 선호 수신 |
+| 3 | `env_context_server.py` | `remember_preference` | 최근 요청 문장 | 현재 요청을 단기 메모리에 저장 |
+| 4 | `public_data_server.py` | `search_tourapi_restaurants` | `area=전주`, `near_gaeksa=true`, `limit=8` | TourAPI 음식점 후보 8개 수신 |
+| 5 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=1597886` | 하숙영 가마솥비빔밥 상세 정보 수신 |
+| 6 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=2759623` | 성미당 상세 정보 수신 |
+| 7 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=133228` | 한국집 상세 정보 수신 |
+| 8 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=3444028` | 진미반점 상세 정보 수신 |
+| 9 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=2907462` | 또순이네집 상세 정보 수신 |
+| 10 | `public_data_server.py` | `rank_tourapi_restaurants` | 상세 후보 5개, 랭킹 정책 | 한국집, 또순이네집, 하숙영 가마솥비빔밥 순으로 최종 후보 정렬 |
+
+상세 JSONL trace는 `sample_outputs/jeonju_trace_sample.jsonl`에 저장되어 있습니다.
+
+## 실행 결과
 
 ```text
 최종 추천 결과

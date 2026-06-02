@@ -4,6 +4,18 @@
 
 사용자의 자연어 요청을 분석한 뒤 MCP 서버들을 도구처럼 호출해 날씨, 사용자 선호도, 맛집 후보, 공공데이터 상세 정보를 수집합니다. 이후 ReAct 흐름으로 검색, 정렬, 검토, 최종 추천을 수행합니다.
 
+## 제출 자료 빠른 확인
+
+| 제출 항목 | 확인 위치 | 비고 |
+| --- | --- | --- |
+| 소스 코드 | `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py` | ReAct 실행 루프와 MCP 도구 서버 구현 |
+| 실행 환경 | `requirements.txt` | Python 패키지 고정 |
+| README | `README.md` | 설치, 실행, 패턴, API 사용 방법 설명 |
+| 실행 로그 | `sample_outputs/jeonju_run_log.md` | 대표 프롬프트 실행 결과와 도구 호출 요약 |
+| ReAct 도구 호출 Trace | `sample_outputs/jeonju_trace_sample.jsonl` | JSONL 원본 trace |
+| Agentic Design Pattern 설명 | README의 `Agentic Design Pattern` 섹션 | ReAct 포함 5개 패턴 설명 |
+| 외부 API 사용 방법 | README의 `외부 API 사용 방법` 섹션 | Open-Meteo, TourAPI 설명 |
+
 ## 구현 요약
 
 - 기본 데이터 경로는 `--data-source auto`입니다. 한국관광공사 TourAPI 공공데이터를 먼저 시도하고, 키가 없거나 지원 범위를 벗어나면 로컬 샘플 데이터셋으로 fallback합니다.
@@ -53,7 +65,9 @@ python -m pip install -r requirements.txt
 copy .env.example .env
 ```
 
-필수 또는 선택 환경 변수:
+기본 실행은 API key가 없어도 동작합니다. 단, 실제 TourAPI 공공데이터를 새로 조회하려면 `TOUR_API_SERVICE_KEY`가 필요합니다. 키가 없으면 Agent가 Observation으로 실패 사유를 기록하고 로컬 샘플 데이터셋으로 fallback합니다.
+
+공공데이터 사용 환경 변수:
 
 - `TOUR_API_SERVICE_KEY`: 한국관광공사_국문 관광정보 서비스_GW의 일반 인증키를 입력합니다. 공공데이터 기반 추천을 사용하려면 필요합니다.
 - `TOUR_API_BASE_URL`: 기본값은 `https://apis.data.go.kr/B551011/KorService2`입니다.
@@ -61,6 +75,9 @@ copy .env.example .env
 - `TOUR_API_MOBILE_APP`: 공공데이터포털 필수 파라미터입니다. 기본값은 `ReAct-aurant`입니다.
 - `TOUR_API_DEFAULT_AREA_CODE`: 전북 지역 코드 `37`입니다.
 - `TOUR_API_DEFAULT_SIGUNGU_CODE`: 전주시 시군구 코드 `12`입니다.
+
+선택 환경 변수:
+
 - `OPENAI_API_KEY`: `--use-llm` 옵션으로 최종 문장 다듬기를 사용할 때만 필요합니다.
 - `OPENAI_BASE_URL`: OpenAI 또는 OpenAI 호환 API base URL입니다.
 - `OPENAI_MODEL`: 선택 LLM 모델명입니다.
@@ -109,12 +126,14 @@ LLM API로 최종 문장만 다듬고 싶을 때는 선택적으로 실행합니
 
 ## Agentic Design Pattern
 
-- Plan-and-Solve Pattern: 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 구조화한 뒤 실행 단계를 나눕니다.
-- Tool Use Pattern: MCP `tools/list`, `tools/call`로 서버 도구를 발견하고 호출합니다.
-- ReAct Pattern: `Thought -> Action -> Observation` 형태로 날씨 조회, 후보 검색, 상세 조회, 정렬을 반복합니다.
-- Reflection Pattern: 공공데이터 후보가 없거나 지원 범위를 벗어나면 Observation을 검토하고 로컬 데이터셋 fallback을 수행합니다.
-- Memory Pattern: 사용자 선호 프로필을 조회하고 현재 요청을 단기 메모리에 저장합니다.
-- Multi-Agent 구조: Coordinator Agent, Context Specialist Agent, Public Data Agent, Culinary Finder Agent, Reflection Reviewer 역할을 분리했습니다.
+| Pattern | 적용 방식 |
+| --- | --- |
+| Plan-and-Solve Pattern | 사용자 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 구조화한 뒤 실행 단계를 나눕니다. |
+| Tool Use Pattern | MCP `tools/list`, `tools/call`로 서버 도구를 발견하고 호출합니다. |
+| ReAct Pattern | `Thought -> Action -> Observation` 형태로 날씨 조회, 후보 검색, 상세 조회, 정렬을 수행합니다. 필수 패턴입니다. |
+| Reflection Pattern | 공공데이터 후보가 없거나 지원 범위를 벗어나면 Observation을 검토하고 로컬 데이터셋 fallback을 수행합니다. |
+| Memory Pattern | 사용자 선호 프로필을 조회하고 현재 요청을 단기 메모리에 저장합니다. |
+| Multi-Agent 구조 | Coordinator Agent, Context Specialist Agent, Public Data Agent, Culinary Finder Agent, Reflection Reviewer로 역할을 분리했습니다. |
 
 ## ReAct 도구 호출 Trace
 
@@ -134,7 +153,7 @@ LLM API로 최종 문장만 다듬고 싶을 때는 선택적으로 실행합니
 
 ## 실행 로그
 
-대표 실행 로그는 `sample_outputs/jeonju_run_log.md`에 포함했습니다.
+대표 실행 로그는 `sample_outputs/jeonju_run_log.md`에 포함했습니다. 이 파일에는 대표 프롬프트, Agent 판단 과정 요약, 호출 도구 이름, 도구 입력값, Observation 요약, 최종 추천 결과가 들어 있습니다.
 
 검증한 추가 케이스:
 
