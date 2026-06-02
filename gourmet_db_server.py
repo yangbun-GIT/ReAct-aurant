@@ -224,12 +224,20 @@ def _score_restaurant(restaurant: dict[str, Any], ranking_policy: dict[str, Any]
         reasons.append("가격 조건보다 높음")
 
     purpose = str(ranking_policy.get("purpose", ""))
-    if any(tag in purpose for tag in restaurant["purpose_tags"]):
-        score += 8
+    purpose_score = 0
+    if "친구" in purpose and "친구" in restaurant["purpose_tags"]:
+        purpose_score += 4
+    if "저녁" in purpose and "저녁" in restaurant["purpose_tags"]:
+        purpose_score += 6
+    if purpose_score:
+        score += purpose_score
         reasons.append("방문 목적 적합")
-    elif "친구" in restaurant["purpose_tags"] and "저녁" in restaurant["purpose_tags"]:
-        score += 6
-        reasons.append("친구와 저녁에 적합")
+    if "저녁" in purpose and "저녁" not in restaurant["purpose_tags"]:
+        score -= 8
+        reasons.append("저녁 식사 적합도 낮음")
+    if "저녁" in purpose and restaurant["cuisine"] == "카페":
+        score -= 12
+        reasons.append("식사보다 후식에 가까움")
 
     weather_hints = ranking_policy.get("weather_hints", []) or []
     if set(weather_hints) & set(restaurant["weather_tags"] + restaurant["preference_tags"]):
