@@ -16,9 +16,33 @@ env/
 !.env.example
 
 # Logs and runtime output
+logs/
 logs/*.jsonl
 logs/*.log
 *.log
+trace_*.jsonl
+run_*.txt
+
+# Assignment packaging and generated artifacts
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+dist/
+build/
+artifacts/
+screenshots/
+captures/
+
+# Local planning, prompt, and handoff documents
+DEVELOPMENT_PROMPT.md
+PROJECT_PROMPT.md
+AGENTS.md
+*_prompt*.txt
+*_work*.txt
+adaptive_project_development_prompt.md
+docs/
 
 # OS and editor files
 .DS_Store
