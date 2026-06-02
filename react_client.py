@@ -8,7 +8,7 @@ import sys
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
@@ -206,6 +206,13 @@ def _summarize_payload(tool_name: str, payload: dict[str, Any]) -> str:
     if tool_name == "get_restaurant_detail":
         restaurant = payload.get("restaurant") or {}
         return f"{restaurant.get('name', '맛집')} 상세 정보를 수신했습니다."
+    if tool_name == "search_tourapi_restaurants":
+        return f"TourAPI 공공데이터 후보 {payload.get('count', 0)}개를 수신했습니다."
+    if tool_name == "rank_tourapi_restaurants":
+        return f"TourAPI 공공데이터 정렬 후보 {len(payload.get('ranked_candidates', []))}개를 수신했습니다."
+    if tool_name == "get_tourapi_restaurant_detail":
+        restaurant = payload.get("restaurant") or {}
+        return f"{restaurant.get('name', '공공데이터 음식점')} TourAPI 상세 정보를 수신했습니다."
     return f"{tool_name} 결과를 수신했습니다."
 
 
@@ -301,6 +308,7 @@ def build_ranking_policy(
 ) -> dict[str, Any]:
     return {
         "purpose": parsed.purpose,
+        "cuisine": parsed.cuisine,
         "max_price_level": parsed.max_price_level,
         "weather": weather.get("weather"),
         "weather_hints": weather.get("food_hints", []),
@@ -354,6 +362,7 @@ def build_final_answer(
     profile: dict[str, Any],
     recommendations: list[dict[str, Any]],
     reflection: str,
+    data_source_note: str | None = None,
 ) -> str:
     lines = [
         "최종 추천 결과",
@@ -363,6 +372,8 @@ def build_final_answer(
         f"날씨 반영: {weather.get('location', parsed.location)} 기준 {weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도",
         f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
     ]
+    if data_source_note:
+        lines.append(f"데이터 처리: {data_source_note}")
     if parsed.fallback_applied and parsed.fallback_reason:
         lines.append(f"대체 처리: {parsed.fallback_reason} 현재 추천 기준 지역은 {parsed.location}입니다.")
     elif parsed.fallback_reason:
@@ -385,6 +396,96 @@ def build_final_answer(
                 f"- 근거: 평점 {restaurant['rating']}, 리뷰 {restaurant['review_count']}개, 거리 {restaurant['distance_m']}m, 가격대 {restaurant['average_price']}",
                 f"- 점수 근거: {score_reasons}",
                 f"- 대표 메뉴: {', '.join(restaurant.get('signature_menu', []))}",
+                "",
+            ]
+        )
+
+    lines.append(f"Reflection: {reflection}")
+    return "\n".join(lines).strip()
+
+
+def reflect_public_recommendations(
+    ranked_candidates: list[dict[str, Any]],
+    parsed: ParsedRequest,
+) -> tuple[list[dict[str, Any]], str]:
+    accepted: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for candidate in ranked_candidates:
+        if parsed.cuisine and candidate.get("cuisine") and candidate.get("cuisine") != parsed.cuisine:
+            warnings.append(f"{candidate.get('name', '후보')}: 요청 음식 종류와 달라 후순위로 두었습니다.")
+            continue
+        accepted.append(candidate)
+        if len(accepted) >= parsed.limit:
+            break
+
+    if len(accepted) < parsed.limit:
+        for candidate in ranked_candidates:
+            if candidate not in accepted:
+                accepted.append(candidate)
+            if len(accepted) >= parsed.limit:
+                break
+        if len(accepted) < parsed.limit:
+            warnings.append(f"공공데이터 후보가 {len(accepted)}곳만 확보되었습니다.")
+        elif warnings:
+            warnings.append("음식 종류 조건을 엄격히 적용하면 후보가 부족해 점수 순 대체 후보를 보완했습니다.")
+
+    reflection = (
+        "공공데이터 검토 완료: 한국관광공사 TourAPI의 주소, 좌표, 상세정보 충실도, 요청 조건 일치도를 확인했습니다. "
+        "TourAPI는 리뷰 수와 평점을 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
+    )
+    if warnings:
+        reflection += " " + " ".join(warnings)
+    return accepted[: parsed.limit], reflection
+
+
+def _public_value(value: Any, fallback: str = "정보 없음") -> str:
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text if text else fallback
+
+
+def build_public_final_answer(
+    query: str,
+    parsed: ParsedRequest,
+    weather: dict[str, Any],
+    profile: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    reflection: str,
+) -> str:
+    lines = [
+        "최종 추천 결과",
+        "",
+        f"요청: {query}",
+        f"분석 조건: {', '.join(parsed.extracted_conditions)}",
+        "데이터 출처: 한국관광공사 TourAPI KorService2",
+        "데이터 한계: TourAPI는 리뷰 수와 평점을 제공하지 않아 임의 수치를 생성하지 않았습니다.",
+        f"날씨 반영: {weather.get('location', parsed.location)} 기준 {weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도",
+        f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
+        "",
+    ]
+
+    if not recommendations:
+        lines.append("공공데이터 후보를 확보하지 못했습니다.")
+        lines.append("")
+
+    for index, restaurant in enumerate(recommendations, start=1):
+        score_reasons = ", ".join(restaurant.get("score_reasons", [])) or "공공데이터 필드 기준 정렬"
+        menus = restaurant.get("signature_menu") or []
+        operation = restaurant.get("operation") or {}
+        distance = restaurant.get("distance_m")
+        distance_text = f"{distance}m" if isinstance(distance, int) else "정보 없음"
+        lines.extend(
+            [
+                f"{index}. {restaurant['name']} ({restaurant.get('cuisine') or '음식점'})",
+                f"- 추천 이유: {restaurant.get('recommendation_reason', 'TourAPI 등록 음식점 정보 기준으로 추천했습니다.')}",
+                f"- 주소: {_public_value(restaurant.get('address'))}",
+                f"- 거리: 객사 기준 {distance_text}",
+                f"- 전화: {_public_value(restaurant.get('phone'))}",
+                f"- 대표 메뉴: {', '.join(menus) if menus else 'TourAPI 상세 메뉴 정보 없음'}",
+                f"- 영업 정보: {_public_value(operation.get('open_time'))}, 휴무 {_public_value(operation.get('rest_date'))}",
+                f"- 점수 근거: {score_reasons}",
                 "",
             ]
         )
@@ -420,7 +521,12 @@ async def maybe_polish_with_llm(answer: str, use_llm: bool) -> str:
         return answer + f"\n\nLLM 보조 실패 Observation: {exc}"
 
 
-async def run_agent(query: str, trace_path: Path | None, use_llm: bool) -> str:
+async def run_agent(
+    query: str,
+    trace_path: Path | None,
+    use_llm: bool,
+    data_source: Literal["local", "public", "auto"] = "auto",
+) -> str:
     load_dotenv()
     trace = TraceLogger(trace_path)
     messages: list[dict[str, str]] = [
@@ -452,16 +558,31 @@ async def run_agent(query: str, trace_path: Path | None, use_llm: bool) -> str:
                 errlog=server_errlog,
             )
         )
+        public_read = public_write = None
+        if data_source in {"public", "auto"}:
+            public_read, public_write = await stack.enter_async_context(
+                stdio_client(
+                    StdioServerParameters(command=sys.executable, args=["public_data_server.py"], env=env),
+                    errlog=server_errlog,
+                )
+            )
 
         env_session = await stack.enter_async_context(ClientSession(env_read, env_write))
         gourmet_session = await stack.enter_async_context(ClientSession(gourmet_read, gourmet_write))
         await env_session.initialize()
         await gourmet_session.initialize()
+        public_session: ClientSession | None = None
+        if public_read is not None and public_write is not None:
+            public_session = await stack.enter_async_context(ClientSession(public_read, public_write))
+            await public_session.initialize()
 
         env_client = MCPToolClient(env_session, "env_context_server.py", trace)
         gourmet_client = MCPToolClient(gourmet_session, "gourmet_db_server.py", trace)
+        public_client = MCPToolClient(public_session, "public_data_server.py", trace) if public_session else None
         await env_client.list_tools()
         await gourmet_client.list_tools()
+        if public_client is not None:
+            await public_client.list_tools()
 
         parsed = parse_user_request(query)
         trace.write(
@@ -522,6 +643,104 @@ async def run_agent(query: str, trace_path: Path | None, use_llm: bool) -> str:
                 thought_summary="이번 요청을 단기 메모리에 저장합니다.",
             )
         )
+
+        public_fallback_reason: str | None = None
+        if public_client is not None:
+            public_area = "전주" if ("전주" in parsed.location or "객사" in parsed.location) else parsed.location
+            near_gaeksa = "객사" in parsed.location or "객사" in query
+            public_search_observation = await public_client.call_tool(
+                ToolAction(
+                    agent_name="Public Data Agent",
+                    pattern="ReAct Pattern",
+                    tool_name="search_tourapi_restaurants",
+                    tool_input={
+                        "area": public_area,
+                        "near_gaeksa": near_gaeksa,
+                        "limit": 8,
+                        "use_cache": True,
+                    },
+                    mcp_server="public_data_server.py",
+                    thought_summary="Thought: 실제 공공데이터 기반 후보를 먼저 확보해 샘플 데이터 의존도를 낮춥니다.",
+                )
+            )
+            messages.append({"role": "tool", "content": f"Observation: {public_search_observation.summary}"})
+            public_search_payload = public_search_observation.data
+
+            if public_search_payload.get("status") == "ok" and public_search_payload.get("count", 0) > 0:
+                public_candidates = public_search_payload.get("candidates", [])
+                detailed_candidates: list[dict[str, Any]] = []
+                for candidate in public_candidates[:5]:
+                    detail_observation = await public_client.call_tool(
+                        ToolAction(
+                            agent_name="Public Data Agent",
+                            pattern="Tool Use Pattern",
+                            tool_name="get_tourapi_restaurant_detail",
+                            tool_input={"content_id": candidate["content_id"], "use_cache": True},
+                            mcp_server="public_data_server.py",
+                            thought_summary=f"Final Answer 전 공공데이터 상세 근거 보강을 위해 {candidate['name']} 정보를 조회합니다.",
+                        )
+                    )
+                    detail_payload = detail_observation.data
+                    detailed = detail_payload.get("restaurant") if detail_payload.get("status") == "ok" else None
+                    detailed_candidates.append(detailed or candidate)
+                    messages.append({"role": "tool", "content": f"Observation: {detail_observation.summary}"})
+
+                ranking_policy = build_ranking_policy(parsed, weather_observation.data, profile_observation.data)
+                public_rank_observation = await public_client.call_tool(
+                    ToolAction(
+                        agent_name="Public Data Agent",
+                        pattern="ReAct Pattern",
+                        tool_name="rank_tourapi_restaurants",
+                        tool_input={"candidates": detailed_candidates, "ranking_policy": ranking_policy},
+                        mcp_server="public_data_server.py",
+                        thought_summary="Thought: 공공데이터 후보를 거리, 상세정보 충실도, 요청 조건 일치도로 정렬합니다.",
+                    )
+                )
+                messages.append({"role": "tool", "content": f"Observation: {public_rank_observation.summary}"})
+                public_rank_payload = public_rank_observation.data
+                public_ranked_candidates = public_rank_payload.get("ranked_candidates", [])
+
+                if public_ranked_candidates:
+                    recommendations, reflection = reflect_public_recommendations(public_ranked_candidates, parsed)
+                    trace.write(
+                        agent_name="Reflection Reviewer",
+                        pattern="Reflection Pattern",
+                        thought_summary="공공데이터 후보가 사용자 조건에 맞는지 점검합니다.",
+                        reflection=reflection,
+                        observation={"recommendation_ids": [item["restaurant_id"] for item in recommendations]},
+                        messages_count=len(messages),
+                    )
+                    answer = build_public_final_answer(
+                        query=query,
+                        parsed=parsed,
+                        weather=weather_observation.data,
+                        profile=profile_observation.data,
+                        recommendations=recommendations,
+                        reflection=reflection,
+                    )
+                    answer = await maybe_polish_with_llm(answer, use_llm=use_llm)
+                    messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
+                    trace.write(
+                        agent_name="Coordinator Agent",
+                        pattern="Final Answer",
+                        thought_summary="공공데이터 Observation과 Reflection 결과를 종합해 최종 답변을 생성합니다.",
+                        messages_count=len(messages),
+                        final_answer=answer,
+                    )
+                    return answer
+
+                public_fallback_reason = "공공데이터 후보 정렬 결과가 비어 있어 로컬 샘플 데이터셋으로 대체합니다."
+            else:
+                public_fallback_reason = public_search_payload.get("message") or "공공데이터 후보를 확보하지 못했습니다."
+
+            trace.write(
+                agent_name="Public Data Agent",
+                pattern="Reflection Pattern",
+                thought_summary="공공데이터 경로를 사용할 수 없어 로컬 샘플 데이터셋 fallback을 수행합니다.",
+                reflection=public_fallback_reason,
+                observation=public_search_payload,
+                messages_count=len(messages),
+            )
 
         max_steps = 5
         search_payload: dict[str, Any] | None = None
@@ -640,6 +859,11 @@ async def run_agent(query: str, trace_path: Path | None, use_llm: bool) -> str:
             profile=profile_observation.data,
             recommendations=recommendations,
             reflection=reflection,
+            data_source_note=(
+                f"공공데이터 경로를 사용할 수 없어 로컬 샘플 데이터셋으로 대체했습니다. 사유: {public_fallback_reason}"
+                if public_fallback_reason
+                else None
+            ),
         )
         answer = await maybe_polish_with_llm(answer, use_llm=use_llm)
         messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
@@ -657,6 +881,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ReAct-aurant 맛집 추천 AI Agent")
     parser.add_argument("--query", default=DEFAULT_QUERY, help="맛집 추천 요청 문장")
     parser.add_argument("--trace", default="logs/trace_jeonju.jsonl", help="Trace JSONL 저장 경로")
+    parser.add_argument(
+        "--data-source",
+        choices=["auto", "public", "local"],
+        default="auto",
+        help="맛집 후보 데이터 소스입니다. auto는 TourAPI를 먼저 시도하고 실패 시 로컬 샘플로 대체합니다.",
+    )
     parser.add_argument("--use-llm", action="store_true", help="선택적으로 GPT API로 최종 문장을 다듬습니다. 기본값은 비용 방지를 위해 비활성입니다.")
     return parser.parse_args()
 
@@ -664,7 +894,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     trace_path = Path(args.trace) if args.trace else None
-    answer = asyncio.run(run_agent(args.query, trace_path, args.use_llm))
+    answer = asyncio.run(run_agent(args.query, trace_path, args.use_llm, args.data_source))
     print(answer)
     if trace_path is not None:
         print()

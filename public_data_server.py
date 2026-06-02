@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
 import math
@@ -203,6 +204,8 @@ def _first_text(*values: Any) -> str | None:
         if value is None:
             continue
         text = str(value).strip()
+        text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+        text = re.sub(r"\s+", " ", text).strip()
         if text:
             return text
     return None
@@ -469,6 +472,13 @@ def search_tourapi_restaurants(
     restaurants = [_standardize_restaurant(item) for item in _items_from_payload(payload)]
     if keyword:
         restaurants = [restaurant for restaurant in restaurants if keyword in _text_blob(restaurant)]
+    restaurants.sort(
+        key=lambda restaurant: (
+            restaurant.get("distance_m") is None,
+            restaurant.get("distance_m") if restaurant.get("distance_m") is not None else 999999,
+            restaurant.get("name") or "",
+        )
+    )
 
     return {
         "status": "ok",
