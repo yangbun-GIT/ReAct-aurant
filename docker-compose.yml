@@ -1,0 +1,28 @@
+services:
+  reactaurant-web:
+    build: .
+    image: reactaurant:latest
+    ports:
+      - "127.0.0.1:${WEB_DOCKER_PORT:-8765}:8765"
+    environment:
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8765
+      WEB_AUTO_LOGIN: "true"
+      WEB_TRUST_LOCAL_PROXY: "true"
+      WEB_ADMIN_USERNAME: ${WEB_ADMIN_USERNAME:-admin}
+      WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}
+      WEB_AGENT_TIMEOUT_SECONDS: ${WEB_AGENT_TIMEOUT_SECONDS:-180}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      TOUR_API_SERVICE_KEY: ${TOUR_API_SERVICE_KEY:-}
+      TOUR_API_BASE_URL: ${TOUR_API_BASE_URL:-https://apis.data.go.kr/B551011/KorService2}
+      TOUR_API_MOBILE_OS: ${TOUR_API_MOBILE_OS:-ETC}
+      TOUR_API_MOBILE_APP: ${TOUR_API_MOBILE_APP:-ReAct-aurant}
+      TOUR_API_DEFAULT_AREA_CODE: ${TOUR_API_DEFAULT_AREA_CODE:-37}
+      TOUR_API_DEFAULT_SIGUNGU_CODE: ${TOUR_API_DEFAULT_SIGUNGU_CODE:-12}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    volumes:
+      - ./logs:/app/logs
+      - ./data/cache:/app/data/cache

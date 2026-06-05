@@ -163,6 +163,21 @@ LLM 실행 옵션:
 .\.venv\Scripts\python web_dashboard.py
 ```
 
+Docker로 실행하려면 아래 명령을 사용합니다. 컨테이너 내부 포트는 `8765`로 고정하고, 로컬 PC에서 열 포트는 `WEB_DOCKER_PORT`로 바꿀 수 있어 포트 충돌을 피하기 쉽습니다.
+
+```powershell
+docker compose up --build
+```
+
+다른 로컬 포트를 쓰려면 다음처럼 실행합니다.
+
+```powershell
+$env:WEB_DOCKER_PORT=18765
+docker compose up --build
+```
+
+실행 후 브라우저에서 `http://127.0.0.1:8765/app` 또는 변경한 포트의 `/app` 주소를 엽니다. Compose 포트는 호스트의 `127.0.0.1`에만 바인딩되도록 설정되어 있습니다. `.env` 파일이 있으면 Docker Compose가 변수 치환에 사용하지만, `.dockerignore`에 의해 이미지에는 포함되지 않습니다.
+
 명령 실행 후 콘솔에 출력되는 `ReAct-aurant Admin: http://127.0.0.1:<port>/app` 주소를 브라우저에서 엽니다. 기본 설정은 로컬 접속 자동 로그인입니다. 회원가입은 없고 관리자 계정 하나만 사용합니다.
 
 웹 대시보드에서 확인할 수 있는 항목:

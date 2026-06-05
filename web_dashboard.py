@@ -33,6 +33,7 @@ def _load_web_settings() -> dict[str, Any]:
         "admin_username": os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin",
         "admin_password": os.getenv("WEB_ADMIN_PASSWORD", "").strip(),
         "auto_login": os.getenv("WEB_AUTO_LOGIN", "true").strip().lower() in {"1", "true", "yes", "on"},
+        "trust_local_proxy": os.getenv("WEB_TRUST_LOCAL_PROXY", "false").strip().lower() in {"1", "true", "yes", "on"},
         "timeout_seconds": int(os.getenv("WEB_AGENT_TIMEOUT_SECONDS", "180")),
     }
 
@@ -322,16 +323,24 @@ def render_dashboard() -> str:
   <title>ReAct-aurant Admin</title>
   <style>
     :root {{
-      --bg: #f6f7f9;
+      --bg: #f7f7f4;
       --surface: #ffffff;
-      --line: #d8dee8;
-      --text: #1d2430;
-      --muted: #5f6c7b;
-      --accent: #0f766e;
-      --accent-dark: #115e59;
+      --surface-soft: #fafafa;
+      --line: #e2ded6;
+      --line-strong: #d4c8b8;
+      --text: #202124;
+      --muted: #6b6259;
+      --accent: #c2410c;
+      --accent-dark: #9a3412;
+      --herb: #2f7d4e;
+      --herb-dark: #1f5e3b;
+      --saffron: #d97706;
+      --focus: #2563eb;
       --warn: #9a3412;
       --error: #b91c1c;
-      --code: #111827;
+      --code: #18181b;
+      --code-line: #27272a;
+      --shadow: 0 18px 40px rgba(31, 28, 23, .08);
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -345,11 +354,12 @@ def render_dashboard() -> str:
     header {{
       border-bottom: 1px solid var(--line);
       background: var(--surface);
+      border-top: 4px solid var(--accent);
     }}
     .topbar {{
       max-width: 1440px;
       margin: 0 auto;
-      padding: 14px 20px;
+      padding: 16px 24px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -362,8 +372,9 @@ def render_dashboard() -> str:
     }}
     h1 {{
       margin: 0;
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 700;
+      color: #171412;
     }}
     .subtle {{
       color: var(--muted);
@@ -372,46 +383,55 @@ def render_dashboard() -> str:
     main {{
       max-width: 1440px;
       margin: 0 auto;
-      padding: 20px;
+      padding: 22px 24px 28px;
       display: grid;
-      grid-template-columns: 360px minmax(0, 1fr);
-      gap: 16px;
+      grid-template-columns: 370px minmax(0, 1fr);
+      gap: 18px;
     }}
     section, aside {{
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
     }}
     .panel-header {{
-      padding: 14px 16px;
+      padding: 15px 18px;
       border-bottom: 1px solid var(--line);
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 12px;
+      background: var(--surface-soft);
     }}
     h2 {{
       margin: 0;
       font-size: 15px;
       font-weight: 700;
+      color: #241c18;
     }}
     .panel-body {{
-      padding: 16px;
+      padding: 18px;
     }}
     label {{
       display: block;
       margin-bottom: 6px;
       font-weight: 600;
       font-size: 13px;
+      color: #3b322b;
     }}
     textarea, select, input {{
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 10px 11px;
+      padding: 11px 12px;
       font: inherit;
       background: #fff;
       color: var(--text);
+    }}
+    textarea:focus, select:focus, input:focus {{
+      outline: 2px solid rgba(194, 65, 12, .18);
+      border-color: var(--accent);
     }}
     textarea {{
       min-height: 128px;
@@ -430,29 +450,42 @@ def render_dashboard() -> str:
       background: var(--accent);
       color: #fff;
       border-radius: 6px;
-      padding: 10px 12px;
+      padding: 11px 14px;
       font: inherit;
       font-weight: 700;
       cursor: pointer;
-      min-height: 40px;
+      min-height: 42px;
+      transition: background .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease;
     }}
-    button:hover {{ background: var(--accent-dark); }}
+    button:hover {{
+      background: var(--accent-dark);
+      border-color: var(--accent-dark);
+      transform: translateY(-1px);
+    }}
+    button:focus-visible {{
+      outline: 3px solid rgba(37, 99, 235, .24);
+      outline-offset: 2px;
+    }}
     button.secondary {{
       background: #fff;
-      color: var(--accent-dark);
+      color: var(--herb-dark);
+      border-color: #9fc6ae;
     }}
     button.secondary:hover {{
-      background: #eef8f7;
+      background: #eef7ef;
+      border-color: var(--herb);
     }}
     button:disabled {{
       opacity: .58;
       cursor: wait;
+      transform: none;
     }}
     .status {{
-      padding: 10px 12px;
+      padding: 11px 12px;
       border: 1px solid var(--line);
+      border-left: 4px solid var(--herb);
       border-radius: 6px;
-      background: #f9fafb;
+      background: #f7fbf7;
       color: var(--muted);
       font-size: 13px;
       min-height: 42px;
@@ -471,11 +504,13 @@ def render_dashboard() -> str:
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 10px;
+      padding: 11px 12px;
       min-height: 64px;
+      border-left: 4px solid transparent;
     }}
     .history-item:hover {{
-      background: #f5fbfa;
+      background: #fff9f5;
+      border-left-color: var(--accent);
     }}
     .history-meta {{
       display: flex;
@@ -488,47 +523,63 @@ def render_dashboard() -> str:
     .workspace {{
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      gap: 16px;
+      gap: 18px;
     }}
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
+      gap: 12px;
     }}
     .metric {{
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 10px;
-      background: #fafafa;
+      padding: 12px;
+      background: #fff;
       min-height: 72px;
+      border-top: 4px solid var(--accent);
+    }}
+    .metric:nth-child(2) {{
+      border-top-color: var(--herb);
+    }}
+    .metric:nth-child(3) {{
+      border-top-color: var(--saffron);
+    }}
+    .metric:nth-child(4) {{
+      border-top-color: #64748b;
     }}
     .metric strong {{
       display: block;
-      font-size: 20px;
+      font-size: 21px;
       margin-top: 4px;
     }}
     .tabs {{
       display: flex;
       flex-wrap: wrap;
       border-bottom: 1px solid var(--line);
-      gap: 0;
+      gap: 6px;
+      padding: 10px;
+      background: var(--surface-soft);
     }}
     .tab-button {{
-      border: 0;
-      border-right: 1px solid var(--line);
-      border-radius: 0;
+      border: 1px solid transparent;
+      border-radius: 6px;
       background: #fff;
       color: var(--text);
       min-height: 44px;
-      padding: 10px 14px;
+      padding: 10px 13px;
+      box-shadow: none;
     }}
     .tab-button.active {{
-      background: #e7f5f3;
+      background: #fff3ec;
       color: var(--accent-dark);
+      border-color: #f1c9b8;
+    }}
+    .tab-button:hover {{
+      transform: none;
     }}
     .tab-panel {{
       display: none;
-      padding: 16px;
+      padding: 18px;
     }}
     .tab-panel.active {{
       display: block;
@@ -537,14 +588,25 @@ def render_dashboard() -> str:
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
-      background: var(--code);
-      color: #f8fafc;
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 14px;
+      padding: 16px;
       overflow: auto;
       max-height: 620px;
       font-size: 13px;
       line-height: 1.55;
+    }}
+    .answer-pre {{
+      background: #fffdfb;
+      border-color: #ead8c6;
+      font-size: 14px;
+    }}
+    .log-pre, .json-pre, .code-line pre {{
+      background: var(--code);
+      color: #f8fafc;
+      border-color: #27272a;
     }}
     .trace-list {{
       display: flex;
@@ -554,12 +616,14 @@ def render_dashboard() -> str:
     .trace-row {{
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 12px;
+      padding: 13px 14px;
       background: #fff;
+      border-left: 4px solid var(--herb);
     }}
     .trace-row h3 {{
       margin: 0 0 6px;
       font-size: 14px;
+      color: #2f231d;
     }}
     .trace-row p {{
       margin: 4px 0;
@@ -579,7 +643,7 @@ def render_dashboard() -> str:
     .code-line code {{
       display: block;
       padding: 10px 12px;
-      background: #111827;
+      background: var(--code-line);
       color: #f8fafc;
       font-family: Consolas, "Courier New", monospace;
       font-size: 13px;
@@ -595,11 +659,16 @@ def render_dashboard() -> str:
       color: var(--muted);
       border: 1px dashed var(--line);
       border-radius: 6px;
+      background: var(--surface-soft);
     }}
     .login {{
       max-width: 420px;
       margin: 64px auto;
       padding: 20px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
     }}
     @media (max-width: 980px) {{
       main {{
@@ -695,11 +764,11 @@ def render_dashboard() -> str:
           <button class="tab-button" type="button" data-tab="log">실행 로그</button>
           <button class="tab-button" type="button" data-tab="json">Trace JSONL</button>
         </div>
-        <div class="tab-panel active" id="tab-answer"><pre id="finalAnswer">아직 실행 결과가 없습니다.</pre></div>
+        <div class="tab-panel active" id="tab-answer"><pre class="answer-pre" id="finalAnswer">아직 실행 결과가 없습니다.</pre></div>
         <div class="tab-panel" id="tab-natural"><div class="trace-list" id="naturalTrace"></div></div>
         <div class="tab-panel" id="tab-code"><div class="code-flow" id="codeTrace"></div></div>
-        <div class="tab-panel" id="tab-log"><pre id="runLog"></pre></div>
-        <div class="tab-panel" id="tab-json"><pre id="jsonTrace"></pre></div>
+        <div class="tab-panel" id="tab-log"><pre class="log-pre" id="runLog"></pre></div>
+        <div class="tab-panel" id="tab-json"><pre class="json-pre" id="jsonTrace"></pre></div>
       </section>
     </div>
   </main>
@@ -872,6 +941,71 @@ def render_login() -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ReAct-aurant Login</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #f7f7f4;
+      color: #202124;
+      font-family: "Segoe UI", Arial, sans-serif;
+      letter-spacing: 0;
+    }}
+    .login {{
+      width: min(420px, calc(100vw - 32px));
+      background: #fff;
+      border: 1px solid #e2ded6;
+      border-top: 4px solid #c2410c;
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: 0 18px 40px rgba(31, 28, 23, .08);
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: 22px;
+    }}
+    p {{
+      margin: 0 0 18px;
+      color: #6b6259;
+      font-size: 14px;
+    }}
+    label {{
+      display: block;
+      margin-bottom: 12px;
+      font-weight: 600;
+      font-size: 13px;
+    }}
+    input {{
+      width: 100%;
+      margin-top: 6px;
+      border: 1px solid #e2ded6;
+      border-radius: 6px;
+      padding: 11px 12px;
+      font: inherit;
+    }}
+    input:focus {{
+      outline: 2px solid rgba(194, 65, 12, .18);
+      border-color: #c2410c;
+    }}
+    button {{
+      width: 100%;
+      border: 1px solid #c2410c;
+      background: #c2410c;
+      color: #fff;
+      border-radius: 6px;
+      padding: 11px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      min-height: 42px;
+    }}
+    button:hover {{
+      background: #9a3412;
+      border-color: #9a3412;
+    }}
+  </style>
 </head>
 <body>
   <main class="login">
@@ -894,7 +1028,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return
 
     def _is_local_request(self) -> bool:
-        return self.client_address[0] in {"127.0.0.1", "::1"}
+        client_ip = self.client_address[0]
+        if client_ip in {"127.0.0.1", "::1"}:
+            return True
+        if WEB_SETTINGS.get("trust_local_proxy") and (
+            client_ip.startswith("172.") or client_ip.startswith("10.") or client_ip.startswith("192.168.")
+        ):
+            return True
+        return False
 
     def _session_id(self) -> str | None:
         cookie = SimpleCookie(self.headers.get("Cookie"))

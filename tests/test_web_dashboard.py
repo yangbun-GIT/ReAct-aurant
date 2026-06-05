@@ -18,6 +18,10 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("실행 로그", html)
         self.assertIn("Trace JSONL", html)
         self.assertIn("stderr 출력 없음", html)
+        self.assertIn("answer-pre", html)
+        self.assertIn("log-pre", html)
+        self.assertIn("--accent: #c2410c", html)
+        self.assertIn("--herb: #2f7d4e", html)
 
     def test_trace_views_expose_natural_language_and_code_flow(self) -> None:
         events = web_dashboard.load_trace_events(Path("sample_outputs/jeonju_trace_sample.jsonl"))
@@ -85,6 +89,30 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(record["final_answer"], "최종 추천 결과")
             finally:
                 web_dashboard.RUNS_ROOT = original_root
+
+    def test_docker_config_runs_dashboard_with_fixed_container_port(self) -> None:
+        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+        dockerignore = Path(".dockerignore").read_text(encoding="utf-8")
+
+        self.assertIn("python:3.13-slim", dockerfile)
+        self.assertIn('CMD ["python", "web_dashboard.py", "--host", "0.0.0.0", "--port", "8765"]', dockerfile)
+        self.assertIn("127.0.0.1:${WEB_DOCKER_PORT:-8765}:8765", compose)
+        self.assertIn('WEB_TRUST_LOCAL_PROXY: "true"', compose)
+        self.assertIn("TOUR_API_SERVICE_KEY: ${TOUR_API_SERVICE_KEY:-}", compose)
+        self.assertIn("OPENAI_API_KEY: ${OPENAI_API_KEY:-}", compose)
+        self.assertIn(".env", dockerignore)
+        self.assertIn("logs/", dockerignore)
+
+    def test_docker_local_proxy_can_use_auto_login_when_explicitly_trusted(self) -> None:
+        original_settings = web_dashboard.WEB_SETTINGS
+        try:
+            web_dashboard.WEB_SETTINGS = {**original_settings, "trust_local_proxy": True}
+            handler = SimpleNamespace(client_address=("172.17.0.1", 51234))
+
+            self.assertTrue(web_dashboard.DashboardHandler._is_local_request(handler))
+        finally:
+            web_dashboard.WEB_SETTINGS = original_settings
 
 
 if __name__ == "__main__":
