@@ -54,7 +54,7 @@ python -m pip install -r requirements.txt
 이미 `.venv`가 생성되어 있다면 아래처럼 바로 실행할 수 있습니다.
 
 ```powershell
-.\.venv\Scripts\python react_client.py --query "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘" --trace logs/trace_jeonju.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘"
 ```
 
 ## 환경 변수
@@ -88,7 +88,13 @@ copy .env.example .env
 대표 과제 요청:
 
 ```powershell
-.\.venv\Scripts\python react_client.py --query "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘." --data-source auto --trace logs/trace_jeonju.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
+```
+
+`--query`를 쓰는 방식도 계속 지원합니다.
+
+```powershell
+.\.venv\Scripts\python react_client.py --query "전주 효자동 한식 맛집 추천해줘" --data-source auto --trace logs\trace_jeonju.jsonl
 ```
 
 데이터 소스 옵션:
@@ -96,6 +102,22 @@ copy .env.example .env
 - `--data-source auto`: TourAPI 공공데이터를 먼저 사용하고 실패 시 로컬 샘플 데이터셋으로 fallback합니다.
 - `--data-source public`: TourAPI 공공데이터 경로를 우선 사용합니다. 전주 외 지역이거나 키가 없으면 로컬 fallback을 기록합니다.
 - `--data-source local`: 공공데이터를 호출하지 않고 로컬 샘플 데이터셋만 사용합니다.
+
+지원하는 전주 세부 지역:
+
+- 객사/객리단길
+- 한옥마을
+- 전북대/전북대학교
+- 송천동
+- 효자동/신시가지
+- 혁신도시
+- 아중리/아중/인후동
+- 서신동
+- 평화동
+- 삼천동
+- 중화산동
+- 전주역
+- 전주터미널/고속버스터미널/시외버스터미널
 
 LLM API로 최종 문장만 다듬고 싶을 때는 선택적으로 실행합니다. 비용 방지를 위해 기본값은 비활성입니다.
 
@@ -119,7 +141,7 @@ LLM API로 최종 문장만 다듬고 싶을 때는 선택적으로 실행합니
 
 `public_data_server.py`
 
-- `search_tourapi_restaurants(area, keyword, near_gaeksa, limit, use_cache)`: 한국관광공사 TourAPI에서 전주시 음식점 후보를 조회합니다.
+- `search_tourapi_restaurants(area, keyword, near_gaeksa, limit, use_cache)`: 한국관광공사 TourAPI에서 전주시 전체 또는 세부 지역 반경 음식점 후보를 조회합니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.
@@ -182,7 +204,7 @@ Open-Meteo Forecast API:
 - 사용 작업: `areaBasedList2`, `locationBasedList2`, `detailCommon2`, `detailIntro2`
 - 음식점 기준: `contentTypeId=39`
 - 전주 기준: `areaCode=37`, `sigunguCode=12`
-- 객사 근처 기준: 객사 좌표 주변 `locationBasedList2` 반경 검색
+- 세부 지역 기준: 객사, 한옥마을, 전북대, 송천동, 효자동 등 중심 좌표 주변 `locationBasedList2` 반경 검색
 - 캐시: `data/cache/tourapi`에 24시간 캐시 저장, 제출물과 GitHub에는 포함하지 않음
 
 Kakao Local API, Naver Search API, Google Places API는 과금 또는 키 관리 부담을 피하기 위해 기본 구현에서 제외했습니다.

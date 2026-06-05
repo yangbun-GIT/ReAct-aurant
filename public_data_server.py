@@ -19,7 +19,90 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("공공데이터 맛집 서버")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-GAEKSA_COORDINATES = {"longitude": 127.1467, "latitude": 35.8187}
+JEONJU_SEARCH_AREAS: dict[str, dict[str, Any]] = {
+    "객사": {
+        "aliases": ["객사", "객리단길", "전주객사"],
+        "longitude": 127.1467,
+        "latitude": 35.8187,
+        "radius": 1500,
+    },
+    "한옥마을": {
+        "aliases": ["한옥마을", "전주한옥마을"],
+        "longitude": 127.1530,
+        "latitude": 35.8151,
+        "radius": 1500,
+    },
+    "전북대": {
+        "aliases": ["전북대", "전북대학교", "전대"],
+        "longitude": 127.1297,
+        "latitude": 35.8468,
+        "radius": 1800,
+    },
+    "송천동": {
+        "aliases": ["송천동", "송천"],
+        "longitude": 127.1214,
+        "latitude": 35.8694,
+        "radius": 1800,
+    },
+    "효자동": {
+        "aliases": ["효자동", "신시가지"],
+        "longitude": 127.1064,
+        "latitude": 35.8195,
+        "radius": 1800,
+    },
+    "혁신도시": {
+        "aliases": ["혁신도시", "전주혁신도시"],
+        "longitude": 127.0632,
+        "latitude": 35.8381,
+        "radius": 2200,
+    },
+    "아중리": {
+        "aliases": ["아중리", "아중", "인후동"],
+        "longitude": 127.1728,
+        "latitude": 35.8298,
+        "radius": 1800,
+    },
+    "서신동": {
+        "aliases": ["서신동", "서신"],
+        "longitude": 127.1166,
+        "latitude": 35.8307,
+        "radius": 1600,
+    },
+    "평화동": {
+        "aliases": ["평화동", "평화"],
+        "longitude": 127.1359,
+        "latitude": 35.7947,
+        "radius": 1800,
+    },
+    "삼천동": {
+        "aliases": ["삼천동", "삼천"],
+        "longitude": 127.1212,
+        "latitude": 35.7980,
+        "radius": 1800,
+    },
+    "중화산동": {
+        "aliases": ["중화산동", "중화산"],
+        "longitude": 127.1217,
+        "latitude": 35.8137,
+        "radius": 1600,
+    },
+    "전주역": {
+        "aliases": ["전주역", "역 앞", "역앞"],
+        "longitude": 127.1616,
+        "latitude": 35.8496,
+        "radius": 1800,
+    },
+    "전주터미널": {
+        "aliases": ["터미널", "고속버스터미널", "시외버스터미널", "전주터미널"],
+        "longitude": 127.1248,
+        "latitude": 35.8358,
+        "radius": 1800,
+    },
+}
+GAEKSA_COORDINATES = {
+    "longitude": JEONJU_SEARCH_AREAS["객사"]["longitude"],
+    "latitude": JEONJU_SEARCH_AREAS["객사"]["latitude"],
+}
 CACHE_ROOT = Path("data/cache/tourapi")
 DEFAULT_CACHE_TTL = timedelta(hours=24)
 CONTENT_TYPE_RESTAURANT = "39"
@@ -220,12 +303,28 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _distance_m(longitude: float | None, latitude: float | None) -> int | None:
+def _resolve_search_area(area: str | None, near_gaeksa: bool = False) -> dict[str, Any] | None:
+    if near_gaeksa:
+        return {"name": "객사", **JEONJU_SEARCH_AREAS["객사"]}
+
+    text = area or ""
+    for name, config in JEONJU_SEARCH_AREAS.items():
+        if any(alias in text for alias in config["aliases"]):
+            return {"name": name, **config}
+    return None
+
+
+def _distance_m(
+    longitude: float | None,
+    latitude: float | None,
+    reference_coordinates: dict[str, float] | None = None,
+) -> int | None:
     if longitude is None or latitude is None:
         return None
 
-    lon1 = math.radians(GAEKSA_COORDINATES["longitude"])
-    lat1 = math.radians(GAEKSA_COORDINATES["latitude"])
+    reference = reference_coordinates or GAEKSA_COORDINATES
+    lon1 = math.radians(reference["longitude"])
+    lat1 = math.radians(reference["latitude"])
     lon2 = math.radians(longitude)
     lat2 = math.radians(latitude)
     dlon = lon2 - lon1
@@ -269,6 +368,8 @@ def _standardize_restaurant(
     item: dict[str, Any],
     detail_common: dict[str, Any] | None = None,
     detail_intro: dict[str, Any] | None = None,
+    reference_coordinates: dict[str, float] | None = None,
+    reference_name: str | None = None,
 ) -> dict[str, Any]:
     common = detail_common or {}
     intro = detail_intro or {}
@@ -278,8 +379,8 @@ def _standardize_restaurant(
     longitude = _float_or_none(_first_text(raw.get("mapx")))
     latitude = _float_or_none(_first_text(raw.get("mapy")))
     distance = _float_or_none(raw.get("dist"))
-    if distance is None:
-        distance = _distance_m(longitude, latitude)
+    if distance is None and reference_coordinates is not None:
+        distance = _distance_m(longitude, latitude, reference_coordinates)
 
     menus = _split_menu(_first_text(raw.get("firstmenu"), raw.get("treatmenu")))
     cuisine = _infer_cuisine(raw, menus)
@@ -307,6 +408,7 @@ def _standardize_restaurant(
         "longitude": longitude,
         "latitude": latitude,
         "distance_m": int(distance) if distance is not None else None,
+        "distance_reference": reference_name,
         "rating": None,
         "review_count": None,
         "average_price": None,
@@ -354,17 +456,18 @@ def _score_public_restaurant(
         score += 18
         reasons.append("전주 주소 일치")
 
+    distance_reference = restaurant.get("distance_reference") or "검색 기준"
     distance_m = restaurant.get("distance_m")
     if isinstance(distance_m, int):
         if distance_m <= 500:
             score += 14
-            reasons.append("객사 기준 500m 이내")
+            reasons.append(f"{distance_reference} 기준 500m 이내")
         elif distance_m <= 1000:
             score += 10
-            reasons.append("객사 기준 1km 이내")
+            reasons.append(f"{distance_reference} 기준 1km 이내")
         elif distance_m <= 1500:
             score += 7
-            reasons.append("객사 기준 1.5km 이내")
+            reasons.append(f"{distance_reference} 기준 1.5km 이내")
         else:
             score += 3
             reasons.append("전주 권역 좌표 보유")
@@ -438,16 +541,17 @@ def search_tourapi_restaurants(
 
     settings = _load_settings()
     rows = min(max(int(limit) * 3, 20), 100)
-    if near_gaeksa:
+    search_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
+    if search_area is not None:
         path = "locationBasedList2"
         params = {
             "numOfRows": rows,
             "pageNo": 1,
             "arrange": "A",
             "contentTypeId": CONTENT_TYPE_RESTAURANT,
-            "mapX": GAEKSA_COORDINATES["longitude"],
-            "mapY": GAEKSA_COORDINATES["latitude"],
-            "radius": 1500,
+            "mapX": search_area["longitude"],
+            "mapY": search_area["latitude"],
+            "radius": search_area["radius"],
         }
     else:
         path = "areaBasedList2"
@@ -469,7 +573,17 @@ def search_tourapi_restaurants(
         }
 
     payload = result["payload"]
-    restaurants = [_standardize_restaurant(item) for item in _items_from_payload(payload)]
+    reference_coordinates = (
+        {"longitude": search_area["longitude"], "latitude": search_area["latitude"]} if search_area is not None else None
+    )
+    restaurants = [
+        _standardize_restaurant(
+            item,
+            reference_coordinates=reference_coordinates,
+            reference_name=search_area["name"] if search_area is not None else None,
+        )
+        for item in _items_from_payload(payload)
+    ]
     if keyword:
         restaurants = [restaurant for restaurant in restaurants if keyword in _text_blob(restaurant)]
     restaurants.sort(
@@ -488,13 +602,20 @@ def search_tourapi_restaurants(
             "area": area,
             "keyword": keyword,
             "near_gaeksa": near_gaeksa,
+            "target_area": search_area["name"] if search_area is not None else None,
             "limit": limit,
             "contentTypeId": CONTENT_TYPE_RESTAURANT,
+            "search_method": path,
+            "radius": search_area["radius"] if search_area is not None else None,
         },
         "total_count": _body_total_count(payload),
         "count": len(restaurants[: max(1, limit)]),
         "candidates": restaurants[: max(1, limit)],
-        "message": "전주 음식점 공공데이터 후보를 조회했습니다.",
+        "message": (
+            f"전주 {search_area['name']} 주변 음식점 공공데이터 후보를 조회했습니다."
+            if search_area is not None
+            else "전주 전체 음식점 공공데이터 후보를 조회했습니다."
+        ),
     }
 
 

@@ -3,7 +3,7 @@
 실행 명령:
 
 ```powershell
-.\.venv\Scripts\python react_client.py --query "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘." --data-source auto --trace logs\trace_jeonju.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘." --trace logs\trace_jeonju.jsonl
 ```
 
 ## Agent 판단 과정 요약
@@ -25,7 +25,7 @@
 | 1 | `env_context_server.py` | `get_weather_context` | `location=전주 객사` | 전주 객사 기준 날씨와 음식 힌트 수신 |
 | 2 | `env_context_server.py` | `get_user_profile` | `user_id=default` | 가격 민감도, 선호 음식, 도보 선호 수신 |
 | 3 | `env_context_server.py` | `remember_preference` | 최근 요청 문장 | 현재 요청을 단기 메모리에 저장 |
-| 4 | `public_data_server.py` | `search_tourapi_restaurants` | `area=전주`, `near_gaeksa=true`, `limit=8` | TourAPI 음식점 후보 8개 수신 |
+| 4 | `public_data_server.py` | `search_tourapi_restaurants` | `area=전주 객사`, `target_area=객사`, `near_gaeksa=true`, `limit=8` | TourAPI 음식점 후보 8개 수신 |
 | 5 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=1597886` | 하숙영 가마솥비빔밥 상세 정보 수신 |
 | 6 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=2759623` | 성미당 상세 정보 수신 |
 | 7 | `public_data_server.py` | `get_tourapi_restaurant_detail` | `content_id=133228` | 한국집 상세 정보 수신 |
@@ -44,13 +44,13 @@
 분석 조건: 지역=전주 객사, 목적=친구와 저녁, 최대가격대=2, 최소평점=4.2, 최소리뷰수=100
 데이터 출처: 한국관광공사 TourAPI KorService2
 데이터 한계: TourAPI는 리뷰 수와 평점을 제공하지 않아 임의 수치를 생성하지 않았습니다.
-날씨 반영: 전주 객사 기준 맑음, 17.9도
+날씨 반영: 전주 객사 기준 흐림, 13.1도
 사용자 선호 반영: 너무 비싸지 않은 곳, 리뷰가 좋은 곳, 걷기 부담 없는 거리
 
 1. 한국집 (한식)
 - 추천 이유: 한국관광공사 TourAPI 등록 정보 기준으로 주소, 거리, 상세정보 충실도, 요청 조건 일치도를 반영했습니다.
 - 주소: 전북특별자치도 전주시 완산구 어진길 119
-- 거리: 객사 기준 279m
+- 거리: 객사 기준 277m
 - 전화: 063-284-2224
 - 대표 메뉴: 전주비빔밥
 - 영업 정보: 09:50~21:00 (마지막 주문 20:15), 휴무 연중무휴
@@ -59,7 +59,7 @@
 2. 또순이네집 (한식)
 - 추천 이유: 한국관광공사 TourAPI 등록 정보 기준으로 주소, 거리, 상세정보 충실도, 요청 조건 일치도를 반영했습니다.
 - 주소: 전북특별자치도 전주시 완산구 전주객사3길 11-8
-- 거리: 객사 기준 448m
+- 거리: 객사 기준 442m
 - 전화: 063-231-3123
 - 대표 메뉴: 김치찜
 - 영업 정보: 10:30~21:00 (평일 브레이크타임 16:00~17:00 / 라스트오더 20:40), 휴무 매주 월요일, 화요일
@@ -68,7 +68,7 @@
 3. 하숙영 가마솥비빔밥 (한식)
 - 추천 이유: 한국관광공사 TourAPI 등록 정보 기준으로 주소, 거리, 상세정보 충실도, 요청 조건 일치도를 반영했습니다.
 - 주소: 전북특별자치도 전주시 완산구 전라감영5길 19-3
-- 거리: 객사 기준 163m
+- 거리: 객사 기준 161m
 - 전화: 063-285-8288
 - 대표 메뉴: 옛날가마솥 육회비빔밥
 - 영업 정보: 11:00~19:50 - 준비시간 15:30~17:30 - 마지막 주문 19:20, 휴무 연중무휴

@@ -24,6 +24,21 @@ if hasattr(sys.stderr, "reconfigure"):
 
 DEFAULT_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
 DEFAULT_LOCATION = "전주 객사"
+JEONJU_DETAIL_AREA_ALIASES: dict[str, list[str]] = {
+    "객사": ["객사", "객리단길", "전주객사"],
+    "한옥마을": ["한옥마을", "전주한옥마을"],
+    "전북대": ["전북대", "전북대학교", "전대"],
+    "송천동": ["송천동", "송천"],
+    "효자동": ["효자동", "신시가지"],
+    "혁신도시": ["혁신도시", "전주혁신도시"],
+    "아중리": ["아중리", "아중", "인후동"],
+    "서신동": ["서신동", "서신"],
+    "평화동": ["평화동", "평화"],
+    "삼천동": ["삼천동", "삼천"],
+    "중화산동": ["중화산동", "중화산"],
+    "전주역": ["전주역", "역 앞", "역앞"],
+    "전주터미널": ["터미널", "고속버스터미널", "시외버스터미널", "전주터미널"],
+}
 
 
 class ParsedRequest(BaseModel):
@@ -220,6 +235,15 @@ def _is_error_payload(payload: dict[str, Any]) -> bool:
     return str(payload.get("status", "")).lower() == "error" or payload.get("source") == "error"
 
 
+def detect_jeonju_location(query: str) -> str | None:
+    for area_name, aliases in JEONJU_DETAIL_AREA_ALIASES.items():
+        if any(alias in query for alias in aliases):
+            return f"전주 {area_name}"
+    if "전주" in query:
+        return "전주"
+    return None
+
+
 def parse_user_request(query: str) -> ParsedRequest:
     conditions: list[str] = []
     fallback_location: str | None = None
@@ -229,19 +253,20 @@ def parse_user_request(query: str) -> ParsedRequest:
         location = "서울 홍대"
         fallback_location = DEFAULT_LOCATION
         fallback_reason = "로컬 맛집 데이터셋은 전주 객사 지역을 기준으로 구성되어, 맛집 검색 실패 시 전주 객사로 대체합니다."
-    elif "전주" in query and "객사" in query:
-        location = DEFAULT_LOCATION
-    elif "전주" in query:
-        location = "전주"
     elif "존재하지 않는" in query or "없는 지역" in query or "미지원" in query:
         location = "존재하지 않는 지역"
         fallback_location = DEFAULT_LOCATION
         fallback_reason = "요청 지역을 지원하지 않아 과제 기본 지역인 전주 객사로 대체합니다."
+    elif detected_location := detect_jeonju_location(query):
+        location = detected_location
+        if location != DEFAULT_LOCATION:
+            fallback_location = DEFAULT_LOCATION
+            fallback_reason = "공공데이터 경로를 사용할 수 없으면 로컬 샘플 데이터셋 기준 지역인 전주 객사로 대체합니다."
     else:
         location = DEFAULT_LOCATION
         fallback_reason = "요청에 명확한 지원 지역이 없어 과제 기본 지역인 전주 객사를 사용합니다."
     conditions.append(f"지역={location}")
-    if fallback_reason:
+    if fallback_reason and not (location.startswith("전주") and fallback_location == DEFAULT_LOCATION):
         conditions.append(f"지역보정={fallback_reason}")
 
     cuisine: str | None = None
@@ -475,13 +500,14 @@ def build_public_final_answer(
         menus = restaurant.get("signature_menu") or []
         operation = restaurant.get("operation") or {}
         distance = restaurant.get("distance_m")
+        distance_reference = restaurant.get("distance_reference") or parsed.location
         distance_text = f"{distance}m" if isinstance(distance, int) else "정보 없음"
         lines.extend(
             [
                 f"{index}. {restaurant['name']} ({restaurant.get('cuisine') or '음식점'})",
                 f"- 추천 이유: {restaurant.get('recommendation_reason', 'TourAPI 등록 음식점 정보 기준으로 추천했습니다.')}",
                 f"- 주소: {_public_value(restaurant.get('address'))}",
-                f"- 거리: 객사 기준 {distance_text}",
+                f"- 거리: {distance_reference} 기준 {distance_text}",
                 f"- 전화: {_public_value(restaurant.get('phone'))}",
                 f"- 대표 메뉴: {', '.join(menus) if menus else 'TourAPI 상세 메뉴 정보 없음'}",
                 f"- 영업 정보: {_public_value(operation.get('open_time'))}, 휴무 {_public_value(operation.get('rest_date'))}",
@@ -646,7 +672,7 @@ async def run_agent(
 
         public_fallback_reason: str | None = None
         if public_client is not None:
-            public_area = "전주" if ("전주" in parsed.location or "객사" in parsed.location) else parsed.location
+            public_area = parsed.location
             near_gaeksa = "객사" in parsed.location or "객사" in query
             public_search_observation = await public_client.call_tool(
                 ToolAction(
@@ -682,6 +708,10 @@ async def run_agent(
                     )
                     detail_payload = detail_observation.data
                     detailed = detail_payload.get("restaurant") if detail_payload.get("status") == "ok" else None
+                    if detailed is not None:
+                        for field in ["distance_m", "distance_reference"]:
+                            if candidate.get(field) is not None:
+                                detailed[field] = candidate[field]
                     detailed_candidates.append(detailed or candidate)
                     messages.append({"role": "tool", "content": f"Observation: {detail_observation.summary}"})
 
@@ -879,7 +909,8 @@ async def run_agent(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ReAct-aurant 맛집 추천 AI Agent")
-    parser.add_argument("--query", default=DEFAULT_QUERY, help="맛집 추천 요청 문장")
+    parser.add_argument("natural_query", nargs="*", help="--query 없이 바로 입력하는 자연어 맛집 추천 요청")
+    parser.add_argument("--query", default=None, help="맛집 추천 요청 문장")
     parser.add_argument("--trace", default="logs/trace_jeonju.jsonl", help="Trace JSONL 저장 경로")
     parser.add_argument(
         "--data-source",
@@ -891,10 +922,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_query(args: argparse.Namespace) -> str:
+    if args.query:
+        return args.query.strip()
+    natural_query = " ".join(args.natural_query).strip()
+    return natural_query or DEFAULT_QUERY
+
+
 def main() -> None:
     args = parse_args()
+    query = resolve_query(args)
     trace_path = Path(args.trace) if args.trace else None
-    answer = asyncio.run(run_agent(args.query, trace_path, args.use_llm, args.data_source))
+    answer = asyncio.run(run_agent(query, trace_path, args.use_llm, args.data_source))
     print(answer)
     if trace_path is not None:
         print()
