@@ -235,6 +235,25 @@ def _is_error_payload(payload: dict[str, Any]) -> bool:
     return str(payload.get("status", "")).lower() == "error" or payload.get("source") == "error"
 
 
+def should_use_llm(requested: bool) -> bool:
+    return requested and bool(os.getenv("OPENAI_API_KEY"))
+
+
+def llm_model_name() -> str:
+    return os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+
+
+def parse_llm_json(content: str) -> dict[str, Any]:
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {"raw_plan": content}
+
+
 def detect_jeonju_location(query: str) -> str | None:
     for area_name, aliases in JEONJU_DETAIL_AREA_ALIASES.items():
         if any(alias in query for alias in aliases):
@@ -520,31 +539,227 @@ def build_public_final_answer(
     return "\n".join(lines).strip()
 
 
-async def maybe_polish_with_llm(answer: str, use_llm: bool) -> str:
-    if not use_llm:
-        return answer
+async def call_llm(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int = 900,
+    temperature: float = 0.2,
+) -> str:
     api_key = os.getenv("OPENAI_API_KEY")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     if not api_key:
-        return answer + "\n\nLLM 보조: OPENAI_API_KEY가 없어 규칙 기반 답변을 그대로 사용했습니다."
+        raise RuntimeError("OPENAI_API_KEY가 없어 LLM을 호출할 수 없습니다.")
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=api_key, base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    response = await client.chat.completions.create(
+        model=llm_model_name(),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def run_llm_planner(
+    query: str,
+    parsed: ParsedRequest,
+    trace: TraceLogger,
+    messages_count: int,
+    use_llm: bool,
+) -> dict[str, Any] | None:
+    if not should_use_llm(use_llm):
+        trace.write(
+            agent_name="LLM Planner",
+            pattern="Plan-and-Solve Pattern",
+            thought_summary="OPENAI_API_KEY가 없거나 LLM이 비활성화되어 규칙 기반 계획을 사용합니다.",
+            observation={"llm_enabled": False, "model": None},
+            messages_count=messages_count,
+        )
+        return None
+
+    system_prompt = (
+        "너는 맛집 추천 ReAct Agent의 Planner다. 사용자의 요청과 1차 파싱 결과를 보고 "
+        "도구 호출 계획과 검토 기준을 한국어 JSON으로 작성한다. 실제 맛집 정보, 평점, 리뷰 수를 만들어내지 않는다."
+    )
+    user_prompt = json.dumps(
+        {
+            "user_query": query,
+            "parsed_request": parsed.model_dump(),
+            "available_mcp_servers": {
+                "env_context_server.py": ["get_weather_context", "get_user_profile", "remember_preference"],
+                "public_data_server.py": [
+                    "search_tourapi_restaurants",
+                    "get_tourapi_restaurant_detail",
+                    "rank_tourapi_restaurants",
+                ],
+                "gourmet_db_server.py": ["search_restaurants", "rank_restaurants", "get_restaurant_detail"],
+            },
+            "instruction": {
+                "format": "JSON only",
+                "keys": ["interpreted_conditions", "tool_plan", "reflection_checklist", "final_answer_policy"],
+                "policy": "TourAPI에는 평점/리뷰 수가 없으므로 해당 수치를 생성하지 말 것",
+            },
+        },
+        ensure_ascii=False,
+    )
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=api_key, base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "한국어 과제 제출용 답변을 간결하고 명확하게 다듬어 주세요. 근거 숫자는 바꾸지 마세요."},
-                {"role": "user", "content": answer},
-            ],
-            temperature=0.2,
-            max_tokens=900,
+        content = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=700, temperature=0.1)
+        plan = parse_llm_json(content)
+        trace.write(
+            agent_name="LLM Planner",
+            pattern="Plan-and-Solve Pattern",
+            thought_summary="GPT가 사용자 요청을 분석하고 MCP 도구 호출 계획을 작성했습니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "planner"},
+            observation=plan,
+            messages_count=messages_count,
         )
-        content = response.choices[0].message.content
-        return content or answer
+        return plan
     except Exception as exc:
-        return answer + f"\n\nLLM 보조 실패 Observation: {exc}"
+        trace.write(
+            agent_name="LLM Planner",
+            pattern="Plan-and-Solve Pattern",
+            thought_summary="LLM 계획 생성이 실패해 규칙 기반 계획으로 대체합니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "planner"},
+            observation={"status": "error", "message": str(exc)},
+            messages_count=messages_count,
+        )
+        return None
+
+
+async def run_llm_reflection(
+    *,
+    query: str,
+    parsed: ParsedRequest,
+    recommendations: list[dict[str, Any]],
+    deterministic_reflection: str,
+    trace: TraceLogger,
+    messages_count: int,
+    use_llm: bool,
+    data_source: str,
+) -> str:
+    if not should_use_llm(use_llm):
+        return deterministic_reflection
+
+    compact_recommendations = [
+        {
+            "name": item.get("name"),
+            "cuisine": item.get("cuisine"),
+            "address": item.get("address"),
+            "distance_m": item.get("distance_m"),
+            "distance_reference": item.get("distance_reference"),
+            "score_reasons": item.get("score_reasons", []),
+            "rating": item.get("rating"),
+            "review_count": item.get("review_count"),
+        }
+        for item in recommendations
+    ]
+    system_prompt = (
+        "너는 ReAct Agent의 Reflection Reviewer다. 추천 후보가 사용자 조건에 맞는지 검토하고 "
+        "부족한 점과 데이터 한계를 짧은 한국어 문장으로 작성한다. 없는 평점/리뷰 수는 절대 만들지 않는다. "
+        "부정적으로 단정하지 말고 '데이터 한계가 있다' 수준으로 표현한다."
+    )
+    user_prompt = json.dumps(
+        {
+            "user_query": query,
+            "parsed_request": parsed.model_dump(),
+            "data_source": data_source,
+            "recommendations": compact_recommendations,
+            "deterministic_reflection": deterministic_reflection,
+            "instruction": "최종 답변에 붙일 Reflection 문장만 작성",
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        reflection = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=300, temperature=0.2)
+        reflection = reflection.strip() or deterministic_reflection
+        trace.write(
+            agent_name="LLM Reflection Reviewer",
+            pattern="Reflection Pattern",
+            thought_summary="GPT가 Observation과 추천 후보를 검토해 Reflection을 생성했습니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "reflection", "data_source": data_source},
+            reflection=reflection,
+            observation={"recommendation_ids": [item.get("restaurant_id") for item in recommendations]},
+            messages_count=messages_count,
+        )
+        return reflection
+    except Exception as exc:
+        trace.write(
+            agent_name="LLM Reflection Reviewer",
+            pattern="Reflection Pattern",
+            thought_summary="LLM Reflection 생성이 실패해 규칙 기반 Reflection을 사용합니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "reflection", "data_source": data_source},
+            observation={"status": "error", "message": str(exc)},
+            reflection=deterministic_reflection,
+            messages_count=messages_count,
+        )
+        return deterministic_reflection
+
+
+async def run_llm_final_answer(
+    *,
+    draft_answer: str,
+    trace: TraceLogger,
+    messages_count: int,
+    use_llm: bool,
+    data_source: str,
+) -> str:
+    if not should_use_llm(use_llm):
+        return draft_answer
+
+    system_prompt = (
+        "너는 맛집 추천 ReAct Agent의 최종 답변 생성기다. 제공된 초안의 식당명, 주소, 거리, 전화번호, "
+        "메뉴, 영업정보, 추천 이유, 점수 근거, Reflection, 데이터 한계를 변경하거나 삭제하지 말고 "
+        "한국어로 자연스럽게 정리한다. 각 식당에는 반드시 추천 이유와 점수 근거를 포함한다. "
+        "답변 마지막에는 반드시 'Reflection:'으로 시작하는 검토 문장을 포함한다. "
+        "초안에 없는 '유명', '인기', '맛있다', '평이 좋다' 같은 평가 표현을 새로 추가하지 않는다. "
+        "추천 이유와 점수 근거는 초안의 의미와 항목을 그대로 유지한다. "
+        "TourAPI가 제공하지 않는 평점/리뷰 수는 절대 만들지 않는다."
+    )
+    user_prompt = json.dumps(
+        {
+            "data_source": data_source,
+            "draft_answer": draft_answer,
+            "instruction": "과제 제출용 최종 답변만 작성",
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        final_answer = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=1200, temperature=0.2)
+        final_answer = final_answer.strip() or draft_answer
+        trace.write(
+            agent_name="LLM Final Answer Agent",
+            pattern="Final Answer",
+            thought_summary="GPT가 MCP Observation과 Reflection 기반 초안을 최종 답변으로 구성했습니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "final_answer", "data_source": data_source},
+            final_answer=final_answer,
+            messages_count=messages_count,
+        )
+        return final_answer
+    except Exception as exc:
+        trace.write(
+            agent_name="LLM Final Answer Agent",
+            pattern="Final Answer",
+            thought_summary="LLM 최종 답변 생성이 실패해 규칙 기반 답변을 사용합니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "final_answer", "data_source": data_source},
+            observation={"status": "error", "message": str(exc)},
+            final_answer=draft_answer,
+            messages_count=messages_count,
+        )
+        return draft_answer
 
 
 async def run_agent(
@@ -619,6 +834,15 @@ async def run_agent(
             messages_count=len(messages),
         )
         messages.append({"role": "assistant", "content": f"Thought: {parsed.extracted_conditions}"})
+        llm_plan = await run_llm_planner(
+            query=query,
+            parsed=parsed,
+            trace=trace,
+            messages_count=len(messages),
+            use_llm=use_llm,
+        )
+        if llm_plan is not None:
+            messages.append({"role": "assistant", "content": f"LLM Plan: {json.dumps(llm_plan, ensure_ascii=False)}"})
 
         weather_observation = await env_client.call_tool(
             ToolAction(
@@ -731,7 +955,17 @@ async def run_agent(
                 public_ranked_candidates = public_rank_payload.get("ranked_candidates", [])
 
                 if public_ranked_candidates:
-                    recommendations, reflection = reflect_public_recommendations(public_ranked_candidates, parsed)
+                    recommendations, deterministic_reflection = reflect_public_recommendations(public_ranked_candidates, parsed)
+                    reflection = await run_llm_reflection(
+                        query=query,
+                        parsed=parsed,
+                        recommendations=recommendations,
+                        deterministic_reflection=deterministic_reflection,
+                        trace=trace,
+                        messages_count=len(messages),
+                        use_llm=use_llm,
+                        data_source="TourAPI KorService2",
+                    )
                     trace.write(
                         agent_name="Reflection Reviewer",
                         pattern="Reflection Pattern",
@@ -748,7 +982,13 @@ async def run_agent(
                         recommendations=recommendations,
                         reflection=reflection,
                     )
-                    answer = await maybe_polish_with_llm(answer, use_llm=use_llm)
+                    answer = await run_llm_final_answer(
+                        draft_answer=answer,
+                        trace=trace,
+                        messages_count=len(messages),
+                        use_llm=use_llm,
+                        data_source="TourAPI KorService2",
+                    )
                     messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
                     trace.write(
                         agent_name="Coordinator Agent",
@@ -872,7 +1112,17 @@ async def run_agent(
                 break
 
         ranked_candidates = (ranking_payload or {}).get("ranked_candidates", [])
-        recommendations, reflection = reflect_recommendations(ranked_candidates, parsed)
+        recommendations, deterministic_reflection = reflect_recommendations(ranked_candidates, parsed)
+        reflection = await run_llm_reflection(
+            query=query,
+            parsed=parsed,
+            recommendations=recommendations,
+            deterministic_reflection=deterministic_reflection,
+            trace=trace,
+            messages_count=len(messages),
+            use_llm=use_llm,
+            data_source="local_sample_dataset",
+        )
         trace.write(
             agent_name="Reflection Reviewer",
             pattern="Reflection Pattern",
@@ -895,7 +1145,13 @@ async def run_agent(
                 else None
             ),
         )
-        answer = await maybe_polish_with_llm(answer, use_llm=use_llm)
+        answer = await run_llm_final_answer(
+            draft_answer=answer,
+            trace=trace,
+            messages_count=len(messages),
+            use_llm=use_llm,
+            data_source="local_sample_dataset",
+        )
         messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
         trace.write(
             agent_name="Coordinator Agent",
@@ -918,7 +1174,8 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="맛집 후보 데이터 소스입니다. auto는 TourAPI를 먼저 시도하고 실패 시 로컬 샘플로 대체합니다.",
     )
-    parser.add_argument("--use-llm", action="store_true", help="선택적으로 GPT API로 최종 문장을 다듬습니다. 기본값은 비용 방지를 위해 비활성입니다.")
+    parser.add_argument("--use-llm", action="store_true", help="GPT Agent 모드를 명시적으로 사용합니다. 기본값은 OPENAI_API_KEY가 있으면 자동 사용입니다.")
+    parser.add_argument("--no-llm", action="store_true", help="GPT Agent 모드를 끄고 규칙 기반 fallback으로 실행합니다.")
     return parser.parse_args()
 
 
@@ -929,11 +1186,21 @@ def resolve_query(args: argparse.Namespace) -> str:
     return natural_query or DEFAULT_QUERY
 
 
+def resolve_llm_enabled(args: argparse.Namespace) -> bool:
+    if args.no_llm:
+        return False
+    if args.use_llm:
+        return True
+    return bool(os.getenv("OPENAI_API_KEY"))
+
+
 def main() -> None:
+    load_dotenv()
     args = parse_args()
     query = resolve_query(args)
+    use_llm = resolve_llm_enabled(args)
     trace_path = Path(args.trace) if args.trace else None
-    answer = asyncio.run(run_agent(query, trace_path, args.use_llm, args.data_source))
+    answer = asyncio.run(run_agent(query, trace_path, use_llm, args.data_source))
     print(answer)
     if trace_path is not None:
         print()

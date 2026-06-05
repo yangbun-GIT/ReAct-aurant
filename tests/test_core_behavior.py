@@ -2,7 +2,7 @@ import unittest
 from argparse import Namespace
 
 from public_data_server import _resolve_search_area, _score_public_restaurant, _standardize_restaurant, search_tourapi_restaurants
-from react_client import ParsedRequest, parse_user_request, reflect_public_recommendations, resolve_query
+from react_client import ParsedRequest, parse_user_request, reflect_public_recommendations, resolve_llm_enabled, resolve_query
 
 
 class RequestParsingTests(unittest.TestCase):
@@ -33,6 +33,11 @@ class RequestParsingTests(unittest.TestCase):
         args = Namespace(query=None, natural_query=["전주", "효자동", "한식", "추천"])
 
         self.assertEqual(resolve_query(args), "전주 효자동 한식 추천")
+
+    def test_resolve_llm_enabled_honors_no_llm_flag(self) -> None:
+        args = Namespace(no_llm=True, use_llm=True)
+
+        self.assertFalse(resolve_llm_enabled(args))
 
 
 class PublicDataServerTests(unittest.TestCase):

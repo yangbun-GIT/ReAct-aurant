@@ -21,7 +21,7 @@
 - 기본 데이터 경로는 `--data-source auto`입니다. 한국관광공사 TourAPI 공공데이터를 먼저 시도하고, 키가 없거나 지원 범위를 벗어나면 로컬 샘플 데이터셋으로 fallback합니다.
 - 과금이 발생하지 않도록 Kakao Local API, Naver Search API, Google Places API는 사용하지 않습니다.
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
-- GPT/OpenAI API는 선택 사항입니다. 기본 실행은 `--use-llm`을 주지 않으므로 LLM API 비용이 발생하지 않습니다.
+- OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
 - TourAPI는 평점과 리뷰 수를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 상세정보 충실도, 요청 조건 일치도로 추천하고 임의 평점/리뷰를 생성하지 않습니다.
 
@@ -65,7 +65,7 @@ python -m pip install -r requirements.txt
 copy .env.example .env
 ```
 
-기본 실행은 API key가 없어도 동작합니다. 단, 실제 TourAPI 공공데이터를 새로 조회하려면 `TOUR_API_SERVICE_KEY`가 필요합니다. 키가 없으면 Agent가 Observation으로 실패 사유를 기록하고 로컬 샘플 데이터셋으로 fallback합니다.
+기본 실행은 API key가 없어도 동작합니다. 단, 과제 목적에 맞는 GPT Agent 모드를 사용하려면 `OPENAI_API_KEY`가 필요하고, 실제 TourAPI 공공데이터를 새로 조회하려면 `TOUR_API_SERVICE_KEY`가 필요합니다. 키가 없으면 Agent가 Observation으로 실패 사유를 기록하고 규칙 기반 또는 로컬 샘플 데이터셋으로 fallback합니다.
 
 공공데이터 사용 환경 변수:
 
@@ -76,11 +76,14 @@ copy .env.example .env
 - `TOUR_API_DEFAULT_AREA_CODE`: 전북 지역 코드 `37`입니다.
 - `TOUR_API_DEFAULT_SIGUNGU_CODE`: 전주시 시군구 코드 `12`입니다.
 
-선택 환경 변수:
+LLM Agent 환경 변수:
 
-- `OPENAI_API_KEY`: `--use-llm` 옵션으로 최종 문장 다듬기를 사용할 때만 필요합니다.
+- `OPENAI_API_KEY`: GPT Agent 모드에 필요합니다. 값이 있으면 기본 실행에서 자동 사용됩니다.
 - `OPENAI_BASE_URL`: OpenAI 또는 OpenAI 호환 API base URL입니다.
 - `OPENAI_MODEL`: 선택 LLM 모델명입니다.
+
+선택 환경 변수:
+
 - `KAKAO_REST_API_KEY`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `GOOGLE_PLACES_API_KEY`: 비용 및 키 관리 부담 때문에 기본 구현에서는 사용하지 않습니다.
 
 ## 실행
@@ -119,10 +122,16 @@ copy .env.example .env
 - 전주역
 - 전주터미널/고속버스터미널/시외버스터미널
 
-LLM API로 최종 문장만 다듬고 싶을 때는 선택적으로 실행합니다. 비용 방지를 위해 기본값은 비활성입니다.
+LLM 실행 옵션:
 
 ```powershell
 .\.venv\Scripts\python react_client.py --use-llm
+```
+
+`OPENAI_API_KEY`가 있으면 `--use-llm`을 붙이지 않아도 GPT Agent 모드가 자동으로 켜집니다. API 호출 없이 규칙 기반 fallback만 확인하려면 아래처럼 실행합니다.
+
+```powershell
+.\.venv\Scripts\python react_client.py "전주 객사 근처 맛집 추천해줘" --no-llm
 ```
 
 ## MCP 서버와 도구
@@ -150,12 +159,12 @@ LLM API로 최종 문장만 다듬고 싶을 때는 선택적으로 실행합니
 
 | Pattern | 적용 방식 |
 | --- | --- |
-| Plan-and-Solve Pattern | 사용자 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 구조화한 뒤 실행 단계를 나눕니다. |
+| Plan-and-Solve Pattern | 사용자 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 구조화한 뒤 GPT Planner가 MCP 도구 호출 계획을 생성합니다. |
 | Tool Use Pattern | MCP `tools/list`, `tools/call`로 서버 도구를 발견하고 호출합니다. |
 | ReAct Pattern | `Thought -> Action -> Observation` 형태로 날씨 조회, 후보 검색, 상세 조회, 정렬을 수행합니다. 필수 패턴입니다. |
-| Reflection Pattern | 공공데이터 후보가 없거나 지원 범위를 벗어나면 Observation을 검토하고 로컬 데이터셋 fallback을 수행합니다. |
+| Reflection Pattern | GPT Reflection Reviewer가 Observation과 후보 목록을 검토하고, 공공데이터 후보가 없거나 지원 범위를 벗어나면 로컬 데이터셋 fallback을 수행합니다. |
 | Memory Pattern | 사용자 선호 프로필을 조회하고 현재 요청을 단기 메모리에 저장합니다. |
-| Multi-Agent 구조 | Coordinator Agent, Context Specialist Agent, Public Data Agent, Culinary Finder Agent, Reflection Reviewer로 역할을 분리했습니다. |
+| Multi-Agent 구조 | Coordinator Agent, LLM Planner, Context Specialist Agent, Public Data Agent, Culinary Finder Agent, LLM Reflection Reviewer, LLM Final Answer Agent로 역할을 분리했습니다. |
 
 ## ReAct 도구 호출 Trace
 
