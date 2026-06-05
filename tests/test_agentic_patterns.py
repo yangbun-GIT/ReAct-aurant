@@ -55,6 +55,30 @@ class AgenticPatternTraceTests(unittest.TestCase):
         self.assertIn("TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아", final_answers[-1])
         self.assertIn("평점/리뷰/가격대", final_answers[-1])
 
+    def test_react_agent_client_loop_covers_required_stage_three_flow(self) -> None:
+        events = _load_trace_events()
+        actions = {event.get("action_name"): event.get("step") for event in events}
+
+        parsed_event = next(event for event in events if event.get("agent_name") == "Context Specialist Agent" and event.get("pattern") == "Plan-and-Solve Pattern")
+        self.assertIn("location", parsed_event["observation"])
+        self.assertIn("extracted_conditions", parsed_event["observation"])
+
+        self.assertIn("select_tools", actions)
+        selected_event = next(event for event in events if event.get("action_name") == "select_tools")
+        selected_tools = selected_event["observation"]["selected_tools"]
+        self.assertTrue(any("search_tourapi_restaurants" in item["tools"] for item in selected_tools))
+
+        self.assertLess(actions["select_tools"], actions["search_tourapi_restaurants"])
+        self.assertLess(actions["search_tourapi_restaurants"], actions["Observation:search_tourapi_restaurants"])
+        self.assertLess(actions["Observation:search_tourapi_restaurants"], actions["get_tourapi_restaurant_detail"])
+        self.assertLess(actions["get_tourapi_restaurant_detail"], actions["rank_tourapi_restaurants"])
+        self.assertLess(actions["rank_tourapi_restaurants"], actions["Observation:rank_tourapi_restaurants"])
+
+        reflection_step = min(event["step"] for event in events if event.get("pattern") == "Reflection Pattern")
+        final_step = max(event["step"] for event in events if event.get("pattern") == "Final Answer")
+        self.assertLess(actions["Observation:rank_tourapi_restaurants"], reflection_step)
+        self.assertLess(reflection_step, final_step)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -952,10 +952,11 @@ async def run_agent(
         env_client = MCPToolClient(env_session, "env_context_server.py", trace)
         gourmet_client = MCPToolClient(gourmet_session, "gourmet_db_server.py", trace)
         public_client = MCPToolClient(public_session, "public_data_server.py", trace) if public_session else None
-        await env_client.list_tools()
-        await gourmet_client.list_tools()
+        env_tools = await env_client.list_tools()
+        gourmet_tools = await gourmet_client.list_tools()
+        public_tools: list[str] = []
         if public_client is not None:
-            await public_client.list_tools()
+            public_tools = await public_client.list_tools()
 
         parsed = parse_user_request(query)
         trace.write(
@@ -975,6 +976,51 @@ async def run_agent(
         )
         if llm_plan is not None:
             messages.append({"role": "assistant", "content": f"LLM Plan: {json.dumps(llm_plan, ensure_ascii=False)}"})
+
+        selected_tools = [
+            {
+                "server": "env_context_server.py",
+                "tools": [tool for tool in ["get_weather_context", "get_user_profile", "remember_preference"] if tool in env_tools],
+                "reason": "날씨, 사용자 선호, 단기 메모리를 추천 기준에 반영합니다.",
+            }
+        ]
+        if public_client is not None:
+            selected_tools.append(
+                {
+                    "server": "public_data_server.py",
+                    "tools": [
+                        tool
+                        for tool in [
+                            "search_tourapi_restaurants",
+                            "get_tourapi_restaurant_detail",
+                            "rank_tourapi_restaurants",
+                        ]
+                        if tool in public_tools
+                    ],
+                    "reason": "실제 TourAPI 공공데이터 후보를 우선 검색하고 상세 정보와 랭킹을 수행합니다.",
+                }
+            )
+        if data_source in {"local", "auto"}:
+            selected_tools.append(
+                {
+                    "server": "gourmet_db_server.py",
+                    "tools": [
+                        tool
+                        for tool in ["search_restaurants", "get_restaurant_detail", "rank_restaurants"]
+                        if tool in gourmet_tools
+                    ],
+                    "reason": "공공데이터 후보가 부족하거나 실패할 때 로컬 샘플 데이터셋 fallback을 수행합니다.",
+                }
+            )
+        trace.write(
+            agent_name="Coordinator Agent",
+            pattern="Tool Use Pattern",
+            thought_summary="사용자 조건, 데이터 소스, MCP 도구 목록을 바탕으로 이번 실행에 필요한 도구를 선택합니다.",
+            action_name="select_tools",
+            action_input={"data_source": data_source, "location": parsed.location, "cuisine": parsed.cuisine},
+            observation={"selected_tools": selected_tools},
+            messages_count=len(messages),
+        )
 
         weather_observation = await env_client.call_tool(
             ToolAction(

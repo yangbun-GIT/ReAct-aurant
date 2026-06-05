@@ -188,13 +188,29 @@ LLM 실행 옵션:
 | 점검 항목 | Trace 근거 |
 | --- | --- |
 | Plan-and-Solve | step 1에서 전체 문제를 분해하고, step 5에서 요청 조건을 구조화하며, step 6에서 GPT Planner가 도구 호출 계획과 Reflection 기준을 생성합니다. |
-| Tool Use | step 2~4에서 MCP `tools/list`로 사용 가능한 도구를 발견하고, 이후 `tools/call`로 날씨, 메모리, TourAPI 검색, 상세 조회, 랭킹 도구를 호출합니다. |
-| ReAct 필수 패턴 | step 13 `Thought: 실제 공공데이터 기반 후보 확보 -> Action: search_tourapi_restaurants`, step 14 Observation, step 25 `rank_tourapi_restaurants`, step 26 Observation, step 30 Final Answer로 이어집니다. |
-| Reflection | step 27에서 GPT Reflection Reviewer가 후보와 Observation을 검토하고, step 28에서 조건 충족 여부와 데이터 한계를 기록합니다. |
-| Memory | step 9에서 사용자 선호 프로필을 조회하고, step 11에서 현재 요청을 단기 메모리에 저장합니다. |
+| Tool Use | step 2~4에서 MCP `tools/list`로 사용 가능한 도구를 발견하고, step 7에서 `select_tools`로 실행 도구를 선택한 뒤 `tools/call`로 날씨, 메모리, TourAPI 검색, 상세 조회, 랭킹 도구를 호출합니다. |
+| ReAct 필수 패턴 | step 14 `Thought: 실제 공공데이터 기반 후보 확보 -> Action: search_tourapi_restaurants`, step 15 Observation, step 26 `rank_tourapi_restaurants`, step 27 Observation, step 31 Final Answer로 이어집니다. |
+| Reflection | step 28에서 GPT Reflection Reviewer가 후보와 Observation을 검토하고, step 29에서 조건 충족 여부와 데이터 한계를 기록합니다. |
+| Memory | step 10에서 사용자 선호 프로필을 조회하고, step 12에서 현재 요청을 단기 메모리에 저장합니다. |
 | Multi-Agent | Coordinator, LLM Planner, Context Specialist, Public Data Agent, Reflection Reviewer, LLM Final Answer Agent가 역할을 나누어 실행됩니다. |
 
 패턴 적용 여부는 `tests/test_agentic_patterns.py`에서 자동으로 검증합니다. 이 테스트는 ReAct의 Action/Observation 순서, Reflection 전후 관계, Memory 도구 호출, 최종 답변의 데이터 한계 보존 여부를 확인합니다.
+
+### 3단계 ReAct Agent Client 실행 루프 점검
+
+`react_client.py`의 `run_agent()`가 Agent Client 실행 루프입니다. 이 루프는 LLM에게 한 번에 답을 맡기지 않고, MCP 도구를 직접 호출하면서 다음 흐름을 수행합니다.
+
+| 과제 요구 흐름 | 구현 위치와 Trace 근거 |
+| --- | --- |
+| 사용자 요청 분석 | `parse_user_request()`가 지역, 음식 종류, 목적, 가격, 평점, 리뷰, 거리 조건을 구조화하고 trace step 5에 Observation으로 기록합니다. |
+| 필요한 도구 선택 | MCP `tools/list` 결과와 데이터 소스 설정을 바탕으로 step 7 `select_tools` trace를 기록합니다. 여기에는 환경, 메모리, TourAPI 검색/상세/랭킹, 로컬 fallback 도구 선택 이유가 포함됩니다. |
+| 맛집 검색 도구 호출 | `MCPToolClient.call_tool()`이 step 14에서 `search_tourapi_restaurants` 또는 fallback의 `search_restaurants`를 `tools/call`로 직접 호출합니다. |
+| 검색 결과 Observation 수신 | step 15 `Observation:search_tourapi_restaurants` 또는 fallback의 `Observation:search_restaurants`가 `tools/call/result`로 저장됩니다. |
+| 조건에 맞는 후보 필터링 | step 26~27 `rank_tourapi_restaurants`와 `reflect_public_recommendations()`가 거리, 음식 종류, 상세정보 충실도, 데이터 한계를 반영해 후보를 정렬/검토합니다. |
+| 필요 시 추가 도구 호출 | step 16~25에서 검색 후보 상위 5개에 대해 `get_tourapi_restaurant_detail`을 추가 호출해 전화번호, 메뉴, 영업정보를 보강합니다. 공공데이터 실패 시 로컬 검색 도구로 fallback합니다. |
+| 최종 추천 답변 생성 | step 28~31 Reflection 이후 `build_public_final_answer()` 또는 `build_final_answer()`가 도구 Observation 기반 초안을 만들고, `LLM Final Answer Agent`가 초안의 근거를 보존해 최종 답변을 생성합니다. |
+
+이 실행 루프는 `tests/test_agentic_patterns.py`의 `test_react_agent_client_loop_covers_required_stage_three_flow`에서 자동 검증합니다.
 
 ## ReAct 도구 호출 Trace
 
