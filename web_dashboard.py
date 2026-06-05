@@ -24,7 +24,7 @@ RUNS_ROOT = ROOT / "logs" / "web_runs"
 SESSION_COOKIE = "reactaurant_admin_session"
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 DEFAULT_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
-VALID_DATA_SOURCES = {"auto", "public", "local"}
+VALID_DATA_SOURCES = {"auto", "public", "local", "kakao"}
 VALID_LLM_MODES = {"auto", "use", "no"}
 
 
@@ -187,13 +187,19 @@ def build_code_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def infer_effective_data_source(data_source: str, events: list[dict[str, Any]], final_answer: str = "") -> str:
     actions = [str(event.get("action_name") or "") for event in events]
-    used_public = any(
+    used_kakao = any(action == "search_kakao_local_places" for action in actions) or "Kakao Local API" in final_answer
+    used_tourapi_action = any(
         action in {"search_tourapi_restaurants", "get_tourapi_restaurant_detail", "rank_tourapi_restaurants"}
         for action in actions
-    ) or "TourAPI" in final_answer
+    )
+    used_public = used_tourapi_action or (not used_kakao and "TourAPI" in final_answer)
     used_local = any(action in {"search_restaurants", "get_restaurant_detail", "rank_restaurants"} for action in actions)
 
-    if used_public and used_local:
+    if used_kakao and used_public:
+        effective = "Kakao Local → TourAPI"
+    elif used_kakao:
+        effective = "Kakao Local"
+    elif used_public and used_local:
         effective = "TourAPI → local fallback"
     elif used_public:
         effective = "TourAPI"
@@ -203,10 +209,12 @@ def infer_effective_data_source(data_source: str, events: list[dict[str, Any]], 
         effective = "TourAPI"
     elif data_source == "local":
         effective = "local sample"
+    elif data_source == "kakao":
+        effective = "Kakao Local"
     else:
         effective = "not resolved"
 
-    return f"{data_source} → {effective}" if data_source == "auto" else f"{data_source} → {effective}"
+    return f"{data_source} → {effective}"
 
 
 def infer_effective_llm_mode(llm_mode: str, events: list[dict[str, Any]]) -> str:
@@ -569,6 +577,33 @@ def render_dashboard() -> str:
       grid-template-columns: 1fr 1fr;
       gap: 10px;
     }}
+    .toggle-field {{
+      margin: 2px 0 14px;
+    }}
+    .toggle-label {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid #d8cfc4;
+      background: #fffaf5;
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: var(--text);
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    .toggle-label input {{
+      width: 18px;
+      height: 18px;
+      accent-color: var(--herb);
+    }}
+    .toggle-help {{
+      display: block;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 12px;
+      margin-top: 2px;
+    }}
     button {{
       border: 1px solid var(--accent);
       background: var(--accent);
@@ -631,7 +666,7 @@ def render_dashboard() -> str:
       display: grid;
       grid-template-columns: minmax(0, 1fr) 64px;
       align-items: stretch;
-      min-height: 126px;
+      min-height: 78px;
       overflow: hidden;
     }}
     .history-item:hover {{
@@ -696,7 +731,7 @@ def render_dashboard() -> str:
     }}
     .history-meta {{
       display: grid;
-      gap: 2px;
+      gap: 0;
       color: var(--muted);
       font-size: 12px;
       margin-top: 4px;
@@ -1064,6 +1099,15 @@ def render_dashboard() -> str:
               </select>
             </div>
           </div>
+          <div class="toggle-field">
+            <label class="toggle-label" for="kakaoEnabled">
+              <input id="kakaoEnabled" name="kakaoEnabled" type="checkbox">
+              <span>
+                Kakao Local API 우선 사용
+                <span class="toggle-help">활성화하면 음식점 후보와 위치 검색을 Kakao Local API 기준으로 실행합니다.</span>
+              </span>
+            </label>
+          </div>
           <button id="runBtn" type="submit">실행</button>
         </form>
         <div class="field" style="margin-top:14px">
@@ -1341,8 +1385,6 @@ def render_dashboard() -> str:
             <div class="history-title">${{escapeHtml(item.query)}}</div>
             <div class="history-meta">
               <span>${{escapeHtml(item.created_at)}}</span>
-              <span>${{escapeHtml(item.data_source || '-')}} → ${{escapeHtml(item.effective_data_source || '-')}} · ${{escapeHtml(item.llm_mode || '-')}} → ${{escapeHtml(item.effective_llm_mode || '-')}}</span>
-              <span>events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
             </div>
           </button>
           <button class="delete-run" type="button" aria-label="실행 삭제">삭제</button>
@@ -1405,7 +1447,7 @@ def render_dashboard() -> str:
       try {{
         const payload = {{
           query: document.getElementById('query').value,
-          data_source: document.getElementById('dataSource').value,
+          data_source: document.getElementById('kakaoEnabled').checked ? 'kakao' : document.getElementById('dataSource').value,
           llm_mode: document.getElementById('llmMode').value
         }};
         const response = await fetch('/api/run', {{

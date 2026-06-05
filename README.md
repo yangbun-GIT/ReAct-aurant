@@ -14,20 +14,20 @@
 | 실행 로그 | `sample_outputs/jeonju_run_log.md` | 대표 프롬프트 실행 결과와 도구 호출 요약 |
 | ReAct 도구 호출 Trace | `sample_outputs/jeonju_trace_sample.jsonl` | JSONL 원본 trace |
 | Agentic Design Pattern 설명 | README의 `Agentic Design Pattern` 섹션 | ReAct 포함 5개 패턴 설명 |
-| 외부 API 사용 방법 | README의 `외부 API 사용 방법` 섹션 | Open-Meteo, TourAPI 설명 |
+| 외부 API 사용 방법 | README의 `외부 API 사용 방법` 섹션 | Open-Meteo, TourAPI, Kakao Local API 설명 |
 
 ## 구현 요약
 
-- 기본 데이터 경로는 `--data-source auto`입니다. 한국관광공사 TourAPI 공공데이터를 먼저 시도하고, 키가 없거나 지원 범위를 벗어나면 로컬 샘플 데이터셋으로 fallback합니다.
-- 과금이 발생하지 않도록 기본 실행은 TourAPI와 로컬 샘플 데이터셋을 우선 사용합니다. 단, `KAKAO_REST_API_KEY`가 있으면 TourAPI가 약한 `술집`, `포차`, `호프`, `이자카야` 같은 장소성 의도에 한해 Kakao Local API를 선택 보강 도구로 호출합니다.
+- 기본 데이터 경로는 `--data-source auto`입니다. 자동 모드는 TourAPI 공공데이터를 먼저 시도하고, 키가 없거나 지원 범위를 벗어나면 로컬 샘플 데이터셋으로 fallback합니다.
+- `KAKAO_REST_API_KEY`가 있으면 `--data-source kakao` 또는 웹의 `Kakao Local API 우선 사용` 체크박스로 Kakao Local API를 1차 장소/위치 검색 도구로 사용할 수 있습니다. TourAPI는 공공데이터 근거는 좋지만 평점, 리뷰, 가격대와 술집/상권 장소 검색 품질이 제한적이므로, 실제 장소 후보 탐색은 Kakao Local 우선 모드가 더 적합합니다.
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
 - TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 거리, 상세정보 충실도, 음식 종류 일치도로 추천하고 임의 평점/리뷰/가격을 생성하지 않습니다.
-- 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. 사전에 없는 전주 지명은 TourAPI `searchKeyword2`로 좌표를 찾아 반경 검색을 시도합니다.
+- 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. Kakao 우선 모드에서 사전에 없는 전주 지명은 Kakao Local API 키워드 검색으로 좌표를 찾아 반경 검색을 시도합니다.
 - 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
 - 비/눈/더움/추움/맑음 같은 날씨 조건은 사용자가 입력한 조건을 실제 조회 날씨보다 우선합니다. 비 오는 날은 파전, 막걸리, 따뜻한 국물, 가까운 실내 좌석처럼 보편적인 기대를 힌트로 반영하고, 최종 답변에도 그 근거를 표시합니다.
-- `술집`, `혼술`, `포차`, `호프`, `이자카야` 등 술자리 의도는 일반 한식 후보로 임의 대체하지 않습니다. TourAPI에서 직접 맞는 후보가 없으면 Kakao Local API 보강을 시도하고, 키가 없거나 보강 후보가 없으면 후보 부족과 데이터 한계를 Reflection에 표시합니다.
+- `술집`, `혼술`, `포차`, `호프`, `이자카야` 등 술자리 의도는 일반 한식 후보로 임의 대체하지 않습니다. Kakao 우선 모드에서는 Kakao Local API 후보를 바로 정렬하고, 자동/TourAPI 모드에서는 TourAPI 후보가 부족할 때 Kakao Local API 보강을 시도합니다.
 
 ## Agent 구조 점검 기준
 
@@ -36,7 +36,7 @@
 1. `Coordinator Agent`가 사용자 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 1차 구조화합니다.
 2. `LLM Planner`가 구조화된 조건과 사용 가능한 MCP 도구 목록을 보고 도구 호출 계획과 검토 기준을 생성합니다.
 3. `Context Specialist Agent`가 날씨, 사용자 선호, 단기 메모리 MCP 도구를 호출하고 Observation을 trace에 기록합니다.
-4. `Public Data Agent`가 TourAPI 검색, 상세 조회, 랭킹 MCP 도구를 `Thought -> Action -> Observation` 순서로 실행합니다.
+4. `Public Data Agent`가 데이터 소스 설정에 따라 Kakao Local API 또는 TourAPI 검색, 상세 조회, 랭킹 MCP 도구를 `Thought -> Action -> Observation` 순서로 실행합니다.
 5. `LLM Reflection Reviewer`가 도구 Observation과 후보 목록을 검토해 데이터 한계와 조건 충족 여부를 점검합니다.
 6. `LLM Final Answer Agent`가 Observation, 랭킹 결과, Reflection을 근거로 최종 추천 문장을 생성합니다.
 
@@ -47,7 +47,7 @@
 ```text
 env_context_server.py                    # 날씨, 사용자 선호도, 메모리 MCP 서버
 gourmet_db_server.py                     # 로컬 맛집 검색, 상세 조회, 랭킹 MCP 서버
-public_data_server.py                    # 한국관광공사 TourAPI 공공데이터 MCP 서버
+public_data_server.py                    # Kakao Local API, 한국관광공사 TourAPI 공공데이터 MCP 서버
 jeonju_gazetteer.py                      # 전주 행정동/법정동/생활권 별칭 사전
 react_client.py                          # ReAct Agent 실행 클라이언트
 web_dashboard.py                         # 로컬 관리자 웹 대시보드
@@ -84,7 +84,7 @@ python -m pip install -r requirements.txt
 copy .env.example .env
 ```
 
-기본 실행은 API key가 없어도 동작합니다. 단, 과제 목적에 맞는 GPT Agent 모드를 사용하려면 `OPENAI_API_KEY`가 필요하고, 실제 TourAPI 공공데이터를 새로 조회하려면 `TOUR_API_SERVICE_KEY`가 필요합니다. 키가 없으면 Agent가 Observation으로 실패 사유를 기록하고 규칙 기반 또는 로컬 샘플 데이터셋으로 fallback합니다.
+기본 실행은 API key가 없어도 동작합니다. 단, 과제 목적에 맞는 GPT Agent 모드를 사용하려면 `OPENAI_API_KEY`가 필요하고, 실제 TourAPI 공공데이터를 새로 조회하려면 `TOUR_API_SERVICE_KEY`가 필요합니다. Kakao 우선 모드를 사용하려면 `KAKAO_REST_API_KEY`가 필요합니다. 키가 없으면 Agent가 Observation으로 실패 사유를 기록하고 규칙 기반 또는 로컬 샘플 데이터셋으로 fallback하거나 후보 부족을 설명합니다.
 
 공공데이터 사용 환경 변수:
 
@@ -103,7 +103,7 @@ LLM Agent 환경 변수:
 
 선택 환경 변수:
 
-- `KAKAO_REST_API_KEY`: Kakao Developers에서 발급받는 REST API 키입니다. 값이 있으면 Agent가 TourAPI 후보만으로 술집/포차/호프/이자카야 의도를 충족하지 못할 때 Kakao Local API 키워드 검색을 보강 도구로 호출합니다. Kakao Local은 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하지만 평점/리뷰 수/가격대는 제공하지 않으므로 해당 값은 임의 생성하지 않습니다.
+- `KAKAO_REST_API_KEY`: Kakao Developers에서 발급받는 REST API 키입니다. 값이 있으면 웹의 `Kakao Local API 우선 사용` 체크박스 또는 CLI `--data-source kakao`로 Kakao Local API 키워드 검색을 1차 장소 검색 도구로 호출합니다. Kakao Local은 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하지만 평점/리뷰 수/가격대는 제공하지 않으므로 해당 값은 임의 생성하지 않습니다.
 - `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `GOOGLE_PLACES_API_KEY`: 현재 기본 실행에서는 사용하지 않습니다. 추가 적용 시 비용, 호출 제한, 제출 키 관리 정책을 먼저 확인해야 합니다.
 
 로컬 관리자 웹 대시보드 환경 변수:
@@ -133,9 +133,10 @@ LLM Agent 환경 변수:
 
 - `--data-source auto`: TourAPI 공공데이터를 먼저 사용하고 실패 시 로컬 샘플 데이터셋으로 fallback합니다.
 - `--data-source public`: TourAPI 공공데이터 경로를 우선 사용합니다. 전주 외 지역이거나 키가 없으면 로컬 fallback을 기록합니다.
+- `--data-source kakao`: Kakao Local API를 1차 장소/위치 검색 도구로 사용합니다. 웹에서는 `Kakao Local API 우선 사용` 체크박스를 켜면 이 모드로 실행됩니다.
 - `--data-source local`: 공공데이터를 호출하지 않고 로컬 샘플 데이터셋만 사용합니다.
 
-`auto`는 실행 시점에 실제 사용 경로가 달라질 수 있습니다. 웹 대시보드의 실행 요약과 저장된 실행 목록에는 예를 들어 `auto -> TourAPI`, `auto -> TourAPI -> local fallback`, `auto -> GPT`, `auto -> rule fallback`처럼 실제 선택된 데이터 소스와 LLM 경로가 함께 표시됩니다.
+`auto`는 실행 시점에 실제 사용 경로가 달라질 수 있습니다. 웹 대시보드의 실행 요약에는 예를 들어 `auto -> TourAPI`, `kakao -> Kakao Local`, `auto -> GPT`, `auto -> rule fallback`처럼 실제 선택된 데이터 소스와 LLM 경로가 표시됩니다. 저장된 실행 목록은 가독성을 위해 질문과 실행 일시만 표시하고, 세부 실행 경로는 클릭 후 실행 요약에서 확인합니다.
 
 지원하는 전주 세부 지역:
 
@@ -219,7 +220,7 @@ docker compose up --build
 `public_data_server.py`
 
 - `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다. 술집 의도는 막걸리, 전집, 포차, 호프, 이자카야 등 직접 관련 키워드로 확장하되 일반 식당으로 무리하게 채우지 않습니다.
-- `search_kakao_local_places(area, keyword, cuisine, max_distance_m, near_gaeksa, limit)`: `KAKAO_REST_API_KEY`가 있을 때 Kakao Local API 키워드 검색으로 TourAPI가 약한 장소성 후보를 보강합니다. 현재는 전주 범위로 제한하며, 키가 없으면 error Observation을 반환해 Agent가 데이터 한계를 설명하도록 합니다.
+- `search_kakao_local_places(area, keyword, cuisine, max_distance_m, near_gaeksa, limit)`: `KAKAO_REST_API_KEY`가 있을 때 Kakao Local API 키워드 검색으로 장소 후보를 조회합니다. Kakao 우선 모드에서는 이 도구가 1차 검색 도구이며, 사전에 없는 전주 세부 위치는 Kakao Local API 키워드 검색으로 좌표를 해석합니다. 키가 없으면 error Observation을 반환해 Agent가 데이터 한계를 설명하도록 합니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.
@@ -242,7 +243,7 @@ docker compose up --build
 | 점검 항목 | Trace 근거 |
 | --- | --- |
 | Plan-and-Solve | step 1에서 전체 문제를 분해하고, step 5에서 요청 조건을 구조화하며, step 6에서 GPT Planner가 도구 호출 계획과 Reflection 기준을 생성합니다. |
-| Tool Use | step 2~4에서 MCP `tools/list`로 사용 가능한 도구를 발견하고, step 7에서 `select_tools`로 실행 도구를 선택한 뒤 `tools/call`로 날씨, 메모리, TourAPI 검색, 상세 조회, 랭킹 도구를 호출합니다. |
+| Tool Use | step 2~4에서 MCP `tools/list`로 사용 가능한 도구를 발견하고, step 7에서 `select_tools`로 실행 도구를 선택한 뒤 `tools/call`로 날씨, 메모리, Kakao Local/TourAPI 검색, 상세 조회, 랭킹 도구를 호출합니다. |
 | ReAct 필수 패턴 | step 14 `Thought: 실제 공공데이터 기반 후보 확보 -> Action: search_tourapi_restaurants`, step 15 Observation, step 26 `rank_tourapi_restaurants`, step 27 Observation, step 31 Final Answer로 이어집니다. |
 | Reflection | step 28에서 GPT Reflection Reviewer가 후보와 Observation을 검토하고, step 29에서 조건 충족 여부와 데이터 한계를 기록합니다. |
 | Memory | step 10에서 사용자 선호 프로필을 조회하고, step 12에서 현재 요청을 단기 메모리에 저장합니다. |
@@ -257,7 +258,7 @@ docker compose up --build
 | 과제 요구 흐름 | 구현 위치와 Trace 근거 |
 | --- | --- |
 | 사용자 요청 분석 | `parse_user_request()`가 지역, 음식 종류, 목적, 가격, 평점, 리뷰, 거리 조건을 구조화하고 trace step 5에 Observation으로 기록합니다. |
-| 필요한 도구 선택 | MCP `tools/list` 결과와 데이터 소스 설정을 바탕으로 step 7 `select_tools` trace를 기록합니다. 여기에는 환경, 메모리, TourAPI 검색/상세/랭킹, 로컬 fallback 도구 선택 이유가 포함됩니다. |
+| 필요한 도구 선택 | MCP `tools/list` 결과와 데이터 소스 설정을 바탕으로 step 7 `select_tools` trace를 기록합니다. 여기에는 환경, 메모리, Kakao Local 검색, TourAPI 검색/상세/랭킹, 로컬 fallback 도구 선택 이유가 포함됩니다. |
 | 맛집 검색 도구 호출 | `MCPToolClient.call_tool()`이 step 14에서 `search_tourapi_restaurants` 또는 fallback의 `search_restaurants`를 `tools/call`로 직접 호출합니다. |
 | 검색 결과 Observation 수신 | step 15 `Observation:search_tourapi_restaurants` 또는 fallback의 `Observation:search_restaurants`가 `tools/call/result`로 저장됩니다. |
 | 조건에 맞는 후보 필터링 | step 26~27 `rank_tourapi_restaurants`와 `reflect_public_recommendations()`가 거리, 음식 종류, 상세정보 충실도, 데이터 한계를 반영해 후보를 정렬/검토합니다. |
@@ -289,6 +290,7 @@ docker compose up --build
 검증한 추가 케이스:
 
 - `--data-source public`: TourAPI 후보 조회, 상세정보 조회, 공공데이터 전용 랭킹 수행
+- `--data-source kakao`: Kakao Local API 후보 조회, Kakao 장소/거리/카테고리 기반 랭킹 수행
 - `--data-source local`: 공공데이터 호출 없이 기존 로컬 샘플 데이터셋 실행
 - 전주 외 지역 입력: TourAPI 지원 범위 제한을 Reflection으로 기록하고 로컬 데이터셋으로 fallback
 - API key 없음: `TOUR_API_SERVICE_KEY` 누락을 Observation으로 기록하고 로컬 데이터셋으로 fallback
@@ -303,7 +305,7 @@ Agent는 입력 검증과 도구 호출 결과를 모두 Observation으로 기�
 | 존재하지 않는 지역 또는 전주 외 지역 | `Input Guard Agent`가 warning을 남기고, 도구가 `status=error`를 반환하면 `전주 객사` 기준으로 fallback 검색합니다. |
 | 검색 결과 없음 | 첫 검색 Observation의 `count=0`을 확인한 뒤 리뷰/평점 조건을 완화하고, 그래도 없으면 음식 종류 조건을 해제해 재검색합니다. |
 | 음식 종류가 너무 모호함 | `ambiguous_food_type` warning을 기록하고 특정 메뉴로 제한하지 않은 전체 음식점 검색을 수행합니다. |
-| API 호출 실패 | MCP `tools/call/result`에 error Observation을 기록하고, TourAPI 실패 시 로컬 샘플 데이터셋으로 fallback합니다. |
+| API 호출 실패 | MCP `tools/call/result`에 error Observation을 기록하고, Kakao 우선 모드는 후보 부족/키 설정 문제를 최종 답변에 표시합니다. 자동/TourAPI 경로는 TourAPI 실패 시 로컬 샘플 데이터셋으로 fallback합니다. |
 | 사용자 조건 부족 | `insufficient_conditions` warning을 기록하고 지역, 목적, 가격대 등 누락 조건을 과제 기본값으로 보완합니다. 최종 답변에 보완 내용을 표시합니다. |
 | 맛집과 관계없는 입력 | `unrelated_request` error를 기록하고 도구 호출 없이 전주 맛집 추천 요청 예시를 제시합니다. |
 | 선정적, 폭력적, 불법적 요청 | `safety_blocked` error를 기록하고 도구 호출 없이 안전한 입력 형식으로 유도합니다. |
@@ -322,7 +324,7 @@ Agent는 입력 검증과 도구 호출 결과를 모두 Observation으로 기�
 
 ## 외부 API 사용 방법
 
-실제로 사용하는 외부 API는 Open-Meteo와 한국관광공사 TourAPI입니다.
+실제로 사용하는 외부 API는 Open-Meteo, 한국관광공사 TourAPI, Kakao Local API입니다.
 
 Open-Meteo Forecast API:
 
@@ -343,7 +345,16 @@ Open-Meteo Forecast API:
 - 세부 지역 기준: 객사, 한옥마을, 전북대, 송천동, 효자동 등 중심 좌표 주변 `locationBasedList2` 반경 검색
 - 캐시: `data/cache/tourapi`에 24시간 캐시 저장, 제출물과 GitHub에는 포함하지 않음
 
-Kakao Local API, Naver Search API, Google Places API는 과금 또는 키 관리 부담을 피하기 위해 기본 구현에서 제외했습니다.
+Kakao Local API:
+
+- 사용 위치: `public_data_server.py`
+- 용도: 웹의 `Kakao Local API 우선 사용` 또는 CLI `--data-source kakao` 실행 시 전주 세부 위치 해석, 장소 후보 검색, 거리 기반 추천
+- 인증: `KAKAO_REST_API_KEY`
+- 호출 도구: `search_kakao_local_places`
+- 제공 정보: 장소명, 주소, 전화번호, 카테고리, 거리, 장소 URL
+- 미제공 정보: 평점, 리뷰 수, 가격대. 해당 값은 임의 생성하지 않고 최종 답변의 데이터 한계로 표시합니다.
+
+Naver Search API와 Google Places API는 현재 기본 구현에서 제외했습니다. Google Places는 결제/초과 과금 리스크가 있고, Naver Search는 검색 결과 가공 정책을 추가 검토해야 하므로 이번 과제에서는 Kakao Local API를 장소 검색 보강 도구로 선택했습니다.
 
 ## 테스트
 

@@ -1007,9 +1007,10 @@ def build_public_final_answer(
     profile: dict[str, Any],
     recommendations: list[dict[str, Any]],
     reflection: str,
+    data_source_label: str | None = None,
 ) -> str:
     source_names = {str(item.get("source")) for item in recommendations if item.get("source")}
-    if "Kakao Local API" in source_names:
+    if data_source_label == "Kakao Local API" or "Kakao Local API" in source_names:
         source_label = "Kakao Local API"
         limitation = "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 주소, 거리 중심으로 보강 검색했습니다."
         missing_metric_label = "Kakao Local 미제공"
@@ -1304,7 +1305,7 @@ async def run_agent(
     query: str,
     trace_path: Path | None,
     use_llm: bool,
-    data_source: Literal["local", "public", "auto"] = "auto",
+    data_source: Literal["local", "public", "auto", "kakao"] = "auto",
 ) -> str:
     load_dotenv()
     trace = TraceLogger(trace_path)
@@ -1372,7 +1373,7 @@ async def run_agent(
             )
         )
         public_read = public_write = None
-        if data_source in {"public", "auto"}:
+        if data_source in {"public", "auto", "kakao"}:
             public_read, public_write = await stack.enter_async_context(
                 stdio_client(
                     StdioServerParameters(command=sys.executable, args=["public_data_server.py"], env=env),
@@ -1430,14 +1431,18 @@ async def run_agent(
                     "tools": [
                         tool
                         for tool in [
-                            "search_tourapi_restaurants",
                             "search_kakao_local_places",
+                            "search_tourapi_restaurants",
                             "get_tourapi_restaurant_detail",
                             "rank_tourapi_restaurants",
                         ]
                         if tool in public_tools
                     ],
-                    "reason": "실제 TourAPI 공공데이터 후보를 우선 검색하고 상세 정보와 랭킹을 수행합니다.",
+                    "reason": (
+                        "Kakao Local API를 1차 장소 검색 도구로 사용하고 랭킹을 수행합니다."
+                        if data_source == "kakao"
+                        else "TourAPI 공공데이터 후보를 기본 검색하고, 필요한 경우 Kakao Local API로 보강합니다."
+                    ),
                 }
             )
         if data_source in {"local", "auto"}:
@@ -1516,6 +1521,114 @@ async def run_agent(
         if public_client is not None:
             public_area = parsed.location
             near_gaeksa = "객사" in parsed.location or "객사" in query
+            if data_source == "kakao":
+                kakao_search_observation = await public_client.call_tool(
+                    ToolAction(
+                        agent_name="Public Data Agent",
+                        pattern="ReAct Pattern",
+                        tool_name="search_kakao_local_places",
+                        tool_input={
+                            "area": public_area,
+                            "cuisine": parsed.cuisine,
+                            "max_distance_m": parsed.max_distance_m,
+                            "near_gaeksa": near_gaeksa,
+                            "limit": 8,
+                        },
+                        mcp_server="public_data_server.py",
+                        thought_summary="Thought: 사용자가 Kakao Local API 우선 사용을 활성화했으므로 장소 후보와 위치 기준을 Kakao Local API로 먼저 조회합니다.",
+                    )
+                )
+                messages.append({"role": "tool", "content": f"Observation: {kakao_search_observation.summary}"})
+                kakao_payload = kakao_search_observation.data
+                recommendations: list[dict[str, Any]] = []
+                deterministic_reflection = (
+                    "Kakao Local API를 1차 장소 검색 도구로 사용했습니다. "
+                    "TourAPI는 평점/리뷰/가격 보강에 한계가 있어 이번 실행에서는 Kakao의 장소명, 카테고리, 주소, 거리 정보를 우선했습니다."
+                )
+                source_for_answer = "Kakao Local API"
+
+                if kakao_payload.get("status") == "ok" and kakao_payload.get("count", 0) > 0:
+                    kakao_rank_observation = await public_client.call_tool(
+                        ToolAction(
+                            agent_name="Public Data Agent",
+                            pattern="ReAct Pattern",
+                            tool_name="rank_tourapi_restaurants",
+                            tool_input={
+                                "candidates": kakao_payload.get("candidates", []),
+                                "ranking_policy": build_ranking_policy(parsed, weather_observation.data, profile_observation.data),
+                            },
+                            mcp_server="public_data_server.py",
+                            thought_summary="Thought: Kakao Local 후보를 거리, 카테고리, 요청 조건 일치도로 정렬합니다.",
+                        )
+                    )
+                    messages.append({"role": "tool", "content": f"Observation: {kakao_rank_observation.summary}"})
+                    kakao_rank_payload = kakao_rank_observation.data
+                    kakao_ranked = kakao_rank_payload.get("ranked_candidates", [])
+                    if kakao_ranked:
+                        recommendations, deterministic_reflection = reflect_public_recommendations(kakao_ranked, parsed)
+                        deterministic_reflection = "Kakao Local API 우선 모드로 장소 후보를 조회했습니다. " + deterministic_reflection
+                else:
+                    kakao_issue = {
+                        "type": "kakao_local_unavailable",
+                        "severity": "warning",
+                        "message": "Kakao Local API 우선 모드에서 조건에 맞는 장소 후보를 확보하지 못했습니다.",
+                        "recovery": kakao_payload.get("message", "KAKAO_REST_API_KEY 또는 Kakao Local API 검색 조건을 확인해야 합니다."),
+                    }
+                    parsed.handled_exceptions.append(kakao_issue)
+                    deterministic_reflection += " " + kakao_issue["recovery"]
+                    trace.write(
+                        agent_name="Public Data Agent",
+                        pattern="Reflection Pattern",
+                        thought_summary="Kakao Local API Observation을 검토해 후보 부족 또는 API 설정 문제를 최종 답변에 표시합니다.",
+                        reflection=kakao_issue["recovery"],
+                        observation=kakao_payload,
+                        messages_count=len(messages),
+                    )
+
+                reflection = await run_llm_reflection(
+                    query=query,
+                    parsed=parsed,
+                    recommendations=recommendations,
+                    deterministic_reflection=deterministic_reflection,
+                    trace=trace,
+                    messages_count=len(messages),
+                    use_llm=use_llm,
+                    data_source=source_for_answer,
+                )
+                trace.write(
+                    agent_name="Reflection Reviewer",
+                    pattern="Reflection Pattern",
+                    thought_summary="Kakao Local API 후보가 사용자 조건에 맞는지 점검합니다.",
+                    reflection=reflection,
+                    observation={"recommendation_ids": [item["restaurant_id"] for item in recommendations]},
+                    messages_count=len(messages),
+                )
+                answer = build_public_final_answer(
+                    query=query,
+                    parsed=parsed,
+                    weather=weather_observation.data,
+                    profile=profile_observation.data,
+                    recommendations=recommendations,
+                    reflection=reflection,
+                    data_source_label=source_for_answer,
+                )
+                answer = await run_llm_final_answer(
+                    draft_answer=answer,
+                    trace=trace,
+                    messages_count=len(messages),
+                    use_llm=use_llm,
+                    data_source=source_for_answer,
+                )
+                messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
+                trace.write(
+                    agent_name="Coordinator Agent",
+                    pattern="Final Answer",
+                    thought_summary="Kakao Local API Observation과 Reflection 결과를 종합해 최종 답변을 생성합니다.",
+                    messages_count=len(messages),
+                    final_answer=answer,
+                )
+                return answer
+
             public_search_observation = await public_client.call_tool(
                 ToolAction(
                     agent_name="Public Data Agent",
@@ -1916,9 +2029,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trace", default="logs/trace_jeonju.jsonl", help="Trace JSONL 저장 경로")
     parser.add_argument(
         "--data-source",
-        choices=["auto", "public", "local"],
+        choices=["auto", "public", "local", "kakao"],
         default="auto",
-        help="맛집 후보 데이터 소스입니다. auto는 TourAPI를 먼저 시도하고 실패 시 로컬 샘플로 대체합니다.",
+        help="맛집 후보 데이터 소스입니다. kakao는 Kakao Local API를 1차 장소 검색 도구로 사용합니다.",
     )
     parser.add_argument("--use-llm", action="store_true", help="GPT Agent 모드를 명시적으로 사용합니다. 기본값은 OPENAI_API_KEY가 있으면 자동 사용입니다.")
     parser.add_argument("--no-llm", action="store_true", help="GPT Agent 모드를 끄고 규칙 기반 fallback으로 실행합니다.")

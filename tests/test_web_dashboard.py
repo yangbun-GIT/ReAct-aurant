@@ -18,6 +18,8 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("실행 로그", html)
         self.assertIn("Trace JSONL", html)
         self.assertIn("LLM 모드", html)
+        self.assertIn("Kakao Local API 우선 사용", html)
+        self.assertIn("kakaoEnabled", html)
         self.assertIn("stderr 출력 없음", html)
         self.assertIn("answer-pre", html)
         self.assertIn("answer-view", html)
@@ -98,6 +100,33 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(record["returncode"], 0)
                 self.assertEqual(record["final_answer"], "최종 추천 결과")
                 self.assertEqual(record["effective_llm_mode"], "no → rule fallback")
+            finally:
+                web_dashboard.RUNS_ROOT = original_root
+
+    def test_run_record_accepts_kakao_priority_data_source(self) -> None:
+        original_root = web_dashboard.RUNS_ROOT
+
+        def fake_run(command, **kwargs):
+            trace_path = Path(command[command.index("--trace") + 1])
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            trace_path.write_text(
+                '{"step":1,"agent_name":"Public Data Agent","pattern":"ReAct Pattern","action_name":"search_kakao_local_places","final_answer":"최종 추천 결과"}\n',
+                encoding="utf-8",
+            )
+            return SimpleNamespace(stdout="최종 추천 결과", stderr="", returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                web_dashboard.RUNS_ROOT = Path(temp_dir)
+                with patch("web_dashboard.subprocess.run", side_effect=fake_run):
+                    record = web_dashboard.run_agent_for_dashboard(
+                        query="전주 신시가지 술집 추천",
+                        data_source="kakao",
+                        llm_mode="no",
+                    )
+
+                self.assertIn("kakao", record["command"])
+                self.assertEqual(record["effective_data_source"], "kakao → Kakao Local")
             finally:
                 web_dashboard.RUNS_ROOT = original_root
 

@@ -221,10 +221,18 @@ def _kakao_request(path: str, params: dict[str, Any]) -> dict[str, Any]:
         }
     except httpx.HTTPStatusError as exc:
         safe_text = _mask_secret(exc.response.text, api_key)
+        if exc.response.status_code == 403 and "OPEN_MAP_AND_LOCAL" in safe_text:
+            message = (
+                "Kakao Local API 권한 오류 403: Kakao Developers 내 애플리케이션에서 "
+                "카카오맵/로컬 API 서비스가 활성화되어 있지 않습니다. "
+                "내 애플리케이션 > 제품 설정 또는 사용 설정에서 카카오맵/로컬 API 사용을 활성화해야 합니다."
+            )
+        else:
+            message = f"Kakao Local API HTTP 오류 {exc.response.status_code}: {safe_text[:300]}"
         return {
             "status": "error",
             "source": "Kakao Local API",
-            "message": f"Kakao Local API HTTP 오류 {exc.response.status_code}: {safe_text[:300]}",
+            "message": message,
         }
     except Exception as exc:
         return {
@@ -355,6 +363,49 @@ def _resolve_search_area_from_tourapi(area: str | None, use_cache: bool = True) 
     return None
 
 
+def _resolve_search_area_from_kakao(area: str | None) -> dict[str, Any] | None:
+    keyword = _clean_jeonju_location_keyword(area)
+    if not keyword:
+        return None
+
+    keyword_candidates = [keyword]
+    if not keyword.startswith("전주"):
+        keyword_candidates.append(f"전주 {keyword}")
+
+    for candidate in keyword_candidates:
+        result = _kakao_request(
+            "search/keyword.json",
+            {
+                "query": candidate,
+                "size": 10,
+            },
+        )
+        if result["status"] != "ok":
+            continue
+        for item in result.get("payload", {}).get("documents", []):
+            longitude = _float_or_none(item.get("x"))
+            latitude = _float_or_none(item.get("y"))
+            address = item.get("road_address_name") or item.get("address_name") or ""
+            place_name = item.get("place_name") or keyword
+            if longitude is None or latitude is None or "전주" not in address:
+                continue
+            return {
+                "name": keyword,
+                "aliases": [keyword],
+                "longitude": longitude,
+                "latitude": latitude,
+                "radius": 1800,
+                "resolution_source": "Kakao Local API keyword search",
+                "resolved_from": {
+                    "title": place_name,
+                    "address": address,
+                    "place_url": item.get("place_url"),
+                    "kakao_id": item.get("id"),
+                },
+            }
+    return None
+
+
 def _resolve_search_area_for_query(
     area: str | None,
     near_gaeksa: bool = False,
@@ -364,6 +415,13 @@ def _resolve_search_area_for_query(
     if fixed_area is not None:
         return fixed_area
     return _resolve_search_area_from_tourapi(area, use_cache=use_cache)
+
+
+def _resolve_search_area_for_kakao_query(area: str | None, near_gaeksa: bool = False) -> dict[str, Any] | None:
+    fixed_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
+    if fixed_area is not None:
+        return {**fixed_area, "resolution_source": fixed_area.get("resolution_source", "Jeonju gazetteer")}
+    return _resolve_search_area_from_kakao(area)
 
 
 def _distance_m(
@@ -972,7 +1030,7 @@ def search_kakao_local_places(
             "candidates": [],
         }
 
-    search_area = _resolve_search_area_for_query(area, near_gaeksa=near_gaeksa, use_cache=True)
+    search_area = _resolve_search_area_for_kakao_query(area, near_gaeksa=near_gaeksa)
     if search_area is None:
         return {
             "status": "error",
@@ -1046,6 +1104,7 @@ def search_kakao_local_places(
                 "target_area": search_area["name"],
                 "radius": radius,
                 "queries": queries,
+                "location_resolution": search_area.get("resolution_source"),
             },
             "candidates": [],
         }
@@ -1061,6 +1120,7 @@ def search_kakao_local_places(
             "target_area": search_area["name"],
             "radius": radius,
             "queries": queries,
+            "location_resolution": search_area.get("resolution_source"),
         },
         "unavailable_filters": ["rating", "review_count", "price_level"],
         "data_limitations": "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 거리, 주소로만 보강 검색합니다.",
