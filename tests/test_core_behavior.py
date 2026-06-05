@@ -1,6 +1,8 @@
 import unittest
 from argparse import Namespace
+from unittest.mock import patch
 
+from gourmet_db_server import rank_restaurants, search_restaurants
 from jeonju_gazetteer import JEONJU_SEARCH_AREAS
 from public_data_server import (
     _matches_food_query,
@@ -100,6 +102,22 @@ class RequestParsingTests(unittest.TestCase):
 
         self.assertEqual(parsed.location, "전주 전북대 구정문")
         self.assertEqual(parsed.cuisine, "소바")
+
+    def test_parse_diverse_food_types_beyond_basic_categories(self) -> None:
+        cases = {
+            "전주 신시가지 마라탕 맛집 추천": ("전주 효자동", "마라탕"),
+            "전주 한옥마을 디저트 맛집 추천": ("전주 한옥마을", "디저트"),
+            "전주 송천동 초밥 맛집 추천": ("전주 송천동", "초밥"),
+            "전주 웨리단길 파스타 맛집 추천": ("전주 웨리단길", "파스타"),
+            "전주 객사 해산물 맛집 추천": ("전주 객사", "해산물"),
+        }
+
+        for query, (expected_location, expected_cuisine) in cases.items():
+            with self.subTest(query=query):
+                parsed = parse_user_request(query)
+
+                self.assertEqual(parsed.location, expected_location)
+                self.assertEqual(parsed.cuisine, expected_cuisine)
 
     def test_parse_meal_time_as_purpose_not_cuisine(self) -> None:
         parsed = parse_user_request("전주 중동 점심 맛집 추천")
@@ -287,9 +305,109 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("전주", result["message"])
 
+    def test_public_search_records_unavailable_review_rating_price_filters(self) -> None:
+        fake_payload = {
+            "response": {
+                "body": {
+                    "totalCount": 1,
+                    "items": {
+                        "item": [
+                            {
+                                "contentid": "public-1",
+                                "title": "전주한식테스트",
+                                "addr1": "전북특별자치도 전주시 완산구 전주객사3길 1",
+                                "cat1": "A05",
+                                "cat3": "A05020100",
+                                "mapx": "127.1467",
+                                "mapy": "35.8187",
+                                "firstmenu": "전주비빔밥",
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+
+        with patch("public_data_server._tourapi_request", return_value={"status": "ok", "source": "mock", "cache_key": "test", "payload": fake_payload}):
+            result = search_tourapi_restaurants(
+                area="전주 객사",
+                cuisine="한식",
+                max_price_level=2,
+                min_rating=4.2,
+                min_review_count=100,
+                max_distance_m=1000,
+                use_cache=False,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["query"]["area"], "전주 객사")
+        self.assertEqual(result["query"]["cuisine"], "한식")
+        self.assertEqual(result["query"]["max_price_level"], 2)
+        self.assertEqual(result["query"]["min_rating"], 4.2)
+        self.assertEqual(result["query"]["min_review_count"], 100)
+        self.assertEqual(result["query"]["max_distance_m"], 1000)
+        self.assertEqual(result["query"]["target_area"], "객사")
+        self.assertEqual(set(result["unavailable_filters"]), {"rating", "review_count", "price_level"})
+        self.assertIn("TourAPI", result["data_limitations"])
+        self.assertEqual(result["candidates"][0]["cuisine"], "한식")
+
     def test_public_filter_rejects_non_jeonju_addresses(self) -> None:
         self.assertTrue(_is_jeonju_restaurant({"address": "전북특별자치도 전주시 덕진구 중동로 1"}))
         self.assertFalse(_is_jeonju_restaurant({"address": "전북특별자치도 완주군 이서면 안전로 1"}))
+
+
+class LocalRestaurantToolTests(unittest.TestCase):
+    def test_local_search_filters_region_cuisine_price_rating_reviews_distance_and_purpose(self) -> None:
+        result = search_restaurants(
+            location="전주 객사",
+            cuisine="한식",
+            max_price_level=2,
+            min_rating=4.5,
+            min_review_count=300,
+            max_distance_m=500,
+            purpose="친구와 저녁",
+            limit=10,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertGreater(result["count"], 0)
+        self.assertEqual(result["query"]["location"], "전주 객사")
+        self.assertEqual(result["query"]["cuisine"], "한식")
+        self.assertEqual(result["query"]["max_price_level"], 2)
+        self.assertEqual(result["query"]["min_rating"], 4.5)
+        self.assertEqual(result["query"]["min_review_count"], 300)
+        self.assertEqual(result["query"]["max_distance_m"], 500)
+
+        for candidate in result["candidates"]:
+            self.assertIn("전주 객사", candidate["location"])
+            self.assertEqual(candidate["cuisine"], "한식")
+            self.assertLessEqual(candidate["price_level"], 2)
+            self.assertGreaterEqual(candidate["rating"], 4.5)
+            self.assertGreaterEqual(candidate["review_count"], 300)
+            self.assertLessEqual(candidate["distance_m"], 500)
+            self.assertIn("친구", candidate["purpose_tags"])
+
+    def test_local_rank_scores_weather_and_user_food_preferences(self) -> None:
+        result = rank_restaurants(
+            ["jj_gaeksa_001"],
+            {
+                "purpose": "친구와 저녁",
+                "max_price_level": 2,
+                "weather_hints": ["비"],
+                "preferred_cuisines": ["한식"],
+            },
+        )
+
+        self.assertEqual(result["status"], "ok")
+        reasons = result["ranked_candidates"][0]["score_reasons"]
+
+        self.assertTrue(any(reason.startswith("평점 ") for reason in reasons))
+        self.assertTrue(any(reason.startswith("리뷰 ") for reason in reasons))
+        self.assertIn("매우 가까움", reasons)
+        self.assertIn("가격 조건 적합", reasons)
+        self.assertIn("방문 목적 적합", reasons)
+        self.assertIn("날씨/선호 힌트 적합", reasons)
+        self.assertIn("사용자 선호 음식", reasons)
 
 
 class PublicReflectionTests(unittest.TestCase):
