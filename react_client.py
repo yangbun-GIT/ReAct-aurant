@@ -109,6 +109,43 @@ FOOD_QUERY_TERMS = [
     "칵테일",
 ]
 
+RESTAURANT_CONTEXT_TERMS = [
+    "맛집",
+    "음식점",
+    "식당",
+    "먹",
+    "밥",
+    "메뉴",
+    "카페",
+    "디저트",
+    "전주",
+    "객사",
+    "한옥마을",
+    "웨리단길",
+    "전북대",
+    "신시가지",
+]
+AMBIGUOUS_FOOD_TERMS = ["아무거나", "뭐 먹지", "뭐먹지", "맛있는 거", "맛있는거", "음식", "밥", "메뉴"]
+UNSUPPORTED_REGION_TERMS = [
+    "홍대",
+    "서울",
+    "부산",
+    "대구",
+    "광주",
+    "대전",
+    "인천",
+    "제주",
+    "강릉",
+    "수원",
+    "성남",
+    "청주",
+    "천안",
+]
+UNRELATED_HINT_TERMS = ["파이썬", "코드", "주식", "번역", "수학", "게임", "과제", "보고서", "날씨만", "정치"]
+BLOCKED_SAFETY_TERMS = ["성적인", "음란", "성매매", "19금", "자해", "마약", "불법", "해킹", "칼부림"]
+CONTEXTUAL_SAFETY_TERMS = ["폭력", "폭행", "살인"]
+SAFETY_TERMS = BLOCKED_SAFETY_TERMS + CONTEXTUAL_SAFETY_TERMS
+
 
 class ParsedRequest(BaseModel):
     location: str = DEFAULT_LOCATION
@@ -123,6 +160,10 @@ class ParsedRequest(BaseModel):
     fallback_location: str | None = None
     fallback_reason: str | None = None
     fallback_applied: bool = False
+    missing_conditions: list[str] = Field(default_factory=list)
+    input_warnings: list[str] = Field(default_factory=list)
+    handled_exceptions: list[dict[str, Any]] = Field(default_factory=list)
+    routing_decision: str = "continue"
 
 
 class ToolAction(BaseModel):
@@ -323,6 +364,17 @@ def parse_llm_json(content: str) -> dict[str, Any]:
         return {"raw_plan": content}
 
 
+def _contains_any(query: str, terms: list[str]) -> bool:
+    return any(term in query for term in terms)
+
+
+def _all_jeonju_alias_terms() -> list[str]:
+    terms: list[str] = []
+    for aliases in JEONJU_DETAIL_AREA_ALIASES.values():
+        terms.extend(aliases)
+    return terms
+
+
 def detect_cuisine(query: str) -> str | None:
     for term in FOOD_QUERY_TERMS:
         if term in query:
@@ -333,6 +385,152 @@ def detect_cuisine(query: str) -> str | None:
         if candidate and candidate not in {"전주", "근처", "주변", "좋은", "괜찮은"}:
             return candidate
     return None
+
+
+def detect_unsupported_location(query: str) -> str | None:
+    if "전주" in query:
+        return None
+    for region in sorted(UNSUPPORTED_REGION_TERMS, key=len, reverse=True):
+        if region in query:
+            return "서울 홍대" if region == "홍대" else region
+    return None
+
+
+def _has_restaurant_context(query: str, cuisine: str | None) -> bool:
+    if cuisine:
+        return True
+    if _contains_any(query, RESTAURANT_CONTEXT_TERMS + FOOD_QUERY_TERMS + _all_jeonju_alias_terms()):
+        return True
+    if _contains_any(query, UNRELATED_HINT_TERMS):
+        return False
+    stripped = query.strip()
+    return len(stripped) <= 12 and _contains_any(stripped, ["추천", "알려줘", "찾아줘"])
+
+
+def evaluate_input_guard(query: str, parsed: ParsedRequest) -> dict[str, Any]:
+    restaurant_related = _has_restaurant_context(query, parsed.cuisine)
+    issues: list[dict[str, Any]] = []
+    alternatives = [
+        "전주 객사 한식 맛집 추천",
+        "전주 송천동에서 저렴한 점심 맛집 추천",
+        "전주 전북대 구정문 근처 소바 맛집 3곳 추천",
+    ]
+
+    matched_blocked_terms = [term for term in BLOCKED_SAFETY_TERMS if term in query]
+    matched_contextual_terms = [term for term in CONTEXTUAL_SAFETY_TERMS if term in query]
+    matched_safety_terms = matched_blocked_terms + matched_contextual_terms
+    strict_harmful_action = _contains_any(query, ["방법", "하는 법", "구매", "판매", "공격", "제조", "죽이는", "때리는"])
+    harmful_intent = bool(matched_blocked_terms) or (
+        bool(matched_contextual_terms) and (strict_harmful_action or not restaurant_related)
+    )
+    if harmful_intent:
+        issues.append(
+            {
+                "type": "safety_blocked",
+                "severity": "error",
+                "message": "선정적이거나 폭력적이거나 불법적인 요청은 맛집 추천 Agent가 처리하지 않습니다.",
+                "matched_terms": matched_safety_terms,
+                "recovery": "전주 지역, 음식 종류, 가격대, 방문 목적을 포함한 맛집 추천 요청으로 다시 입력하세요.",
+            }
+        )
+        return {
+            "status": "blocked",
+            "routing_decision": "refuse_and_redirect",
+            "restaurant_related": restaurant_related,
+            "issues": issues,
+            "alternatives": alternatives,
+        }
+
+    if matched_safety_terms:
+        issues.append(
+            {
+                "type": "unsafe_expression_sanitized",
+                "severity": "warning",
+                "message": "부적절하거나 폭력적으로 읽힐 수 있는 표현은 추천 조건에서 제외하고 맛집 맥락만 사용합니다.",
+                "matched_terms": matched_safety_terms,
+                "recovery": "지역, 음식 종류, 가격대, 거리 같은 안전한 맛집 조건만 반영합니다.",
+            }
+        )
+
+    unrelated = not restaurant_related and _contains_any(query, UNRELATED_HINT_TERMS)
+    if not restaurant_related or unrelated:
+        issues.append(
+            {
+                "type": "unrelated_request",
+                "severity": "error",
+                "message": "입력 내용이 맛집 찾기 목적과 직접 관련되지 않습니다.",
+                "recovery": "전주 지역의 세부 위치, 음식 종류, 가격대, 방문 목적 중 하나 이상을 포함해 다시 요청하세요.",
+            }
+        )
+        return {
+            "status": "blocked",
+            "routing_decision": "refuse_and_redirect",
+            "restaurant_related": restaurant_related,
+            "issues": issues,
+            "alternatives": alternatives,
+        }
+
+    if parsed.missing_conditions:
+        issues.append(
+            {
+                "type": "insufficient_conditions",
+                "severity": "warning",
+                "message": f"사용자 조건이 부족합니다: {', '.join(parsed.missing_conditions)}.",
+                "recovery": "누락 조건은 과제 기본값으로 보완하고, 최종 답변에 어떤 기본값을 사용했는지 표시합니다.",
+                "assumptions": {
+                    "location": parsed.location,
+                    "purpose": parsed.purpose,
+                    "max_price_level": parsed.max_price_level,
+                    "min_rating": parsed.min_rating,
+                    "min_review_count": parsed.min_review_count,
+                },
+            }
+        )
+
+    if parsed.cuisine is None and _contains_any(query, AMBIGUOUS_FOOD_TERMS):
+        issues.append(
+            {
+                "type": "ambiguous_food_type",
+                "severity": "warning",
+                "message": "음식 종류가 모호해 특정 메뉴로 제한하지 않습니다.",
+                "recovery": "전체 음식점 후보를 먼저 검색하고, 결과가 부족하면 사용자 선호와 거리 기준으로 정렬합니다.",
+            }
+        )
+
+    if parsed.fallback_reason and parsed.fallback_location:
+        issues.append(
+            {
+                "type": "unsupported_or_unresolved_location",
+                "severity": "warning",
+                "message": parsed.fallback_reason,
+                "recovery": f"도구가 error Observation을 반환하면 {parsed.fallback_location} 기준으로 재검색합니다.",
+            }
+        )
+
+    status = "warning" if issues else "ok"
+    return {
+        "status": status,
+        "routing_decision": "continue_with_assumptions" if issues else "continue",
+        "restaurant_related": restaurant_related,
+        "issues": issues,
+        "alternatives": alternatives if issues else [],
+    }
+
+
+def build_guardrail_answer(query: str, guard: dict[str, Any]) -> str:
+    issue_lines = []
+    for issue in guard.get("issues", []):
+        issue_lines.append(f"- {issue.get('message')} 대안: {issue.get('recovery')}")
+    alternatives = "\n".join(f"- {item}" for item in guard.get("alternatives", []))
+    return (
+        "요청을 맛집 추천 작업으로 처리하기 어렵습니다.\n\n"
+        f"요청: {query}\n"
+        "Observation: 입력 검증 단계에서 error가 감지되었습니다.\n"
+        + "\n".join(issue_lines)
+        + "\n\n다시 입력할 수 있는 예시:\n"
+        + alternatives
+        + "\n\nReflection: Agent는 무관하거나 안전하지 않은 요청에는 도구를 호출하지 않고, 과제 범위인 전주 맛집 추천 요청으로 다시 작성할 수 있는 대안을 제시했습니다."
+    )
 
 
 def _clean_detected_location_suffix(text: str, cuisine: str | None) -> str:
@@ -370,19 +568,23 @@ def detect_jeonju_location(query: str, cuisine: str | None = None) -> str | None
 
 def parse_user_request(query: str) -> ParsedRequest:
     conditions: list[str] = []
+    missing_conditions: list[str] = []
+    input_warnings: list[str] = []
     fallback_location: str | None = None
     fallback_reason: str | None = None
     cuisine = detect_cuisine(query)
+    detected_location = detect_jeonju_location(query, cuisine)
+    unsupported_location = detect_unsupported_location(query)
 
-    if "홍대" in query:
-        location = "서울 홍대"
+    if unsupported_location:
+        location = unsupported_location
         fallback_location = DEFAULT_LOCATION
-        fallback_reason = "로컬 맛집 데이터셋은 전주 객사 지역을 기준으로 구성되어, 맛집 검색 실패 시 전주 객사로 대체합니다."
+        fallback_reason = "현재 과제 검색 범위는 전주로 한정되어 있어, 도구 검색 실패 시 전주 객사로 대체합니다."
     elif "존재하지 않는" in query or "없는 지역" in query or "미지원" in query:
         location = "존재하지 않는 지역"
         fallback_location = DEFAULT_LOCATION
         fallback_reason = "요청 지역을 지원하지 않아 과제 기본 지역인 전주 객사로 대체합니다."
-    elif detected_location := detect_jeonju_location(query, cuisine):
+    elif detected_location:
         location = detected_location
         if location != DEFAULT_LOCATION:
             fallback_location = DEFAULT_LOCATION
@@ -390,12 +592,17 @@ def parse_user_request(query: str) -> ParsedRequest:
     else:
         location = DEFAULT_LOCATION
         fallback_reason = "요청에 명확한 지원 지역이 없어 과제 기본 지역인 전주 객사를 사용합니다."
+        missing_conditions.append("지역")
     conditions.append(f"지역={location}")
     if fallback_reason and not (location.startswith("전주") and fallback_location == DEFAULT_LOCATION):
         conditions.append(f"지역보정={fallback_reason}")
 
     if cuisine:
         conditions.append(f"음식종류={cuisine}")
+    elif _contains_any(query, AMBIGUOUS_FOOD_TERMS):
+        input_warnings.append("음식 종류가 모호해 전체 음식점 후보로 검색합니다.")
+    elif not _contains_any(query, FOOD_QUERY_TERMS):
+        missing_conditions.append("음식 종류")
 
     purpose_parts: list[str] = []
     if "친구" in query:
@@ -403,13 +610,18 @@ def parse_user_request(query: str) -> ParsedRequest:
     if "저녁" in query:
         purpose_parts.append("저녁")
     purpose = "와 ".join(purpose_parts) if purpose_parts else "친구와 저녁"
+    if not purpose_parts:
+        missing_conditions.append("방문 목적")
     conditions.append(f"목적={purpose}")
 
     max_price_level = 2
+    explicit_price = _contains_any(query, ["아주 저렴", "저렴", "비싸", "가성비", "부담", "가격", "비싼"])
     if "아주 저렴" in query or "저렴" in query:
         max_price_level = 1
     elif "비싸" in query or "가성비" in query or "부담" in query:
         max_price_level = 2
+    if not explicit_price:
+        missing_conditions.append("가격대")
     conditions.append(f"최대가격대={max_price_level}")
 
     min_rating = 4.2 if "리뷰" in query or "평점" in query or "좋은" in query else 4.0
@@ -431,6 +643,8 @@ def parse_user_request(query: str) -> ParsedRequest:
         extracted_conditions=conditions,
         fallback_location=fallback_location,
         fallback_reason=fallback_reason,
+        missing_conditions=missing_conditions,
+        input_warnings=input_warnings,
     )
 
 
@@ -504,6 +718,23 @@ def reflect_recommendations(
     return accepted[: parsed.limit], reflection
 
 
+def _exception_feedback_lines(parsed: ParsedRequest) -> list[str]:
+    lines: list[str] = []
+    for issue in parsed.handled_exceptions:
+        severity = issue.get("severity", "info")
+        if severity == "error":
+            continue
+        message = issue.get("message")
+        recovery = issue.get("recovery")
+        if not message:
+            continue
+        line = f"- {message}"
+        if recovery:
+            line += f" 처리: {recovery}"
+        lines.append(line)
+    return lines
+
+
 def build_final_answer(
     query: str,
     parsed: ParsedRequest,
@@ -527,6 +758,10 @@ def build_final_answer(
         lines.append(f"대체 처리: {parsed.fallback_reason} 현재 추천 기준 지역은 {parsed.location}입니다.")
     elif parsed.fallback_reason:
         lines.append(f"요청 보정: {parsed.fallback_reason}")
+    feedback_lines = _exception_feedback_lines(parsed)
+    if feedback_lines:
+        lines.append("예외 처리 피드백:")
+        lines.extend(feedback_lines)
     lines.append("")
 
     if not recommendations:
@@ -633,6 +868,12 @@ def build_public_final_answer(
         f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
         "",
     ]
+
+    feedback_lines = _exception_feedback_lines(parsed)
+    if feedback_lines:
+        lines.insert(-1, "예외 처리 피드백:")
+        for feedback in feedback_lines:
+            lines.insert(-1, feedback)
 
     if not recommendations:
         lines.append("공공데이터 후보를 확보하지 못했습니다.")
@@ -850,6 +1091,7 @@ async def run_llm_final_answer(
         "평점/리뷰/가격대, 메뉴, 영업정보, 추천 이유, 점수 근거, Reflection, 데이터 한계를 변경하거나 삭제하지 말고 "
         "한국어로 자연스럽게 정리한다. 각 식당에는 반드시 추천 이유와 점수 근거를 포함한다. "
         "초안에 '평점/리뷰/가격대' 줄이 있으면 각 식당별로 반드시 그대로 보존한다. "
+        "초안에 '예외 처리 피드백' 섹션이 있으면 삭제하지 말고 그대로 보존한다. "
         "답변 마지막에는 반드시 'Reflection:'으로 시작하는 검토 문장을 포함한다. "
         "초안에 없는 '유명', '인기', '맛있다', '평이 좋다' 같은 평가 표현을 새로 추가하지 않는다. "
         "추천 이유와 점수 근거는 초안의 의미와 항목을 그대로 유지한다. "
@@ -914,6 +1156,40 @@ async def run_agent(
         messages_count=len(messages),
     )
 
+    parsed = parse_user_request(query)
+    input_guard = evaluate_input_guard(query, parsed)
+    if input_guard["issues"]:
+        parsed.handled_exceptions = input_guard["issues"]
+        parsed.routing_decision = input_guard["routing_decision"]
+        trace.write(
+            agent_name="Input Guard Agent",
+            pattern="Exception Handling Pattern",
+            thought_summary="사용자 입력이 맛집 추천 과제 범위와 안전 기준에 맞는지 검증합니다.",
+            action_name="validate_user_request",
+            action_input={"query": query},
+            observation=input_guard,
+            messages_count=len(messages),
+        )
+        if input_guard["status"] == "blocked":
+            reflection = "입력이 맛집 추천 범위를 벗어나거나 안전하지 않아 MCP 도구 호출을 중단하고 대체 입력 예시를 제공합니다."
+            trace.write(
+                agent_name="Input Guard Agent",
+                pattern="Reflection Pattern",
+                thought_summary="error Observation을 검토해 도구 호출 대신 안전한 대안을 제시하기로 결정합니다.",
+                reflection=reflection,
+                observation=input_guard,
+                messages_count=len(messages),
+            )
+            answer = build_guardrail_answer(query, input_guard)
+            trace.write(
+                agent_name="Coordinator Agent",
+                pattern="Final Answer",
+                thought_summary="입력 검증 Observation과 Reflection을 바탕으로 대안 중심 답변을 생성합니다.",
+                messages_count=len(messages),
+                final_answer=answer,
+            )
+            return answer
+
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
 
@@ -958,7 +1234,6 @@ async def run_agent(
         if public_client is not None:
             public_tools = await public_client.list_tools()
 
-        parsed = parse_user_request(query)
         trace.write(
             agent_name="Context Specialist Agent",
             pattern="Plan-and-Solve Pattern",
@@ -1098,6 +1373,22 @@ async def run_agent(
             )
             messages.append({"role": "tool", "content": f"Observation: {public_search_observation.summary}"})
             public_search_payload = public_search_observation.data
+            if public_search_payload.get("query", {}).get("food_filter_relaxed"):
+                relaxed_issue = {
+                    "type": "food_filter_relaxed",
+                    "severity": "warning",
+                    "message": "요청한 음식 종류와 정확히 일치하는 공공데이터 후보가 부족합니다.",
+                    "recovery": "음식 종류 필터를 완화하고 전주 음식점 후보 전체를 거리와 상세정보 기준으로 다시 비교합니다.",
+                }
+                parsed.handled_exceptions.append(relaxed_issue)
+                trace.write(
+                    agent_name="Public Data Agent",
+                    pattern="Reflection Pattern",
+                    thought_summary="공공데이터 Observation에서 음식 종류 필터 완화가 필요하다고 판단했습니다.",
+                    reflection=relaxed_issue["recovery"],
+                    observation=public_search_payload,
+                    messages_count=len(messages),
+                )
 
             if public_search_payload.get("status") == "ok" and public_search_payload.get("count", 0) > 0:
                 public_candidates = public_search_payload.get("candidates", [])
@@ -1259,6 +1550,39 @@ async def run_agent(
                 )
                 search_payload = observation.data
                 messages.append({"role": "tool", "content": f"Observation: {observation.summary}"})
+                if search_payload.get("count", 0) == 0 and parsed.cuisine:
+                    relaxed_issue = {
+                        "type": "no_results_for_food_type",
+                        "severity": "warning",
+                        "message": f"{parsed.cuisine} 조건으로는 추천 후보를 찾지 못했습니다.",
+                        "recovery": "음식 종류 조건을 해제하고 같은 지역의 전체 맛집 후보를 재검색합니다.",
+                    }
+                    parsed.handled_exceptions.append(relaxed_issue)
+                    trace.write(
+                        agent_name="Culinary Finder Agent",
+                        pattern="Reflection Pattern",
+                        thought_summary="검색 결과가 없어 음식 종류 조건을 완화하는 대안을 선택합니다.",
+                        reflection=relaxed_issue["recovery"],
+                        observation=search_payload,
+                        messages_count=len(messages),
+                    )
+                    parsed.extracted_conditions.append("음식종류조건완화=전체")
+                    parsed.cuisine = None
+                    relaxed_input = build_search_input(parsed)
+                    relaxed_input["min_review_count"] = 0
+                    relaxed_input["min_rating"] = 4.0
+                    observation = await gourmet_client.call_tool(
+                        ToolAction(
+                            agent_name="Culinary Finder Agent",
+                            pattern="Reflection Pattern",
+                            tool_name="search_restaurants",
+                            tool_input=relaxed_input,
+                            mcp_server="gourmet_db_server.py",
+                            thought_summary="Fallback Action: 음식 종류를 전체로 넓혀 후보를 다시 검색합니다.",
+                        )
+                    )
+                    search_payload = observation.data
+                    messages.append({"role": "tool", "content": f"Observation: {observation.summary}"})
                 continue
 
             if step == 2 and search_payload is not None:

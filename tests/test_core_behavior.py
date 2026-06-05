@@ -8,7 +8,15 @@ from public_data_server import (
     _standardize_restaurant,
     search_tourapi_restaurants,
 )
-from react_client import ParsedRequest, parse_llm_json, parse_user_request, reflect_public_recommendations, resolve_llm_enabled, resolve_query
+from react_client import (
+    ParsedRequest,
+    evaluate_input_guard,
+    parse_llm_json,
+    parse_user_request,
+    reflect_public_recommendations,
+    resolve_llm_enabled,
+    resolve_query,
+)
 
 
 class RequestParsingTests(unittest.TestCase):
@@ -31,6 +39,13 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.location, "서울 홍대")
         self.assertEqual(parsed.fallback_location, "전주 객사")
         self.assertIsNotNone(parsed.fallback_reason)
+
+    def test_parse_general_unsupported_region_keeps_fallback_reason(self) -> None:
+        parsed = parse_user_request("부산 서면 근처에서 친구랑 저녁 먹기 좋은 맛집 추천해줘")
+
+        self.assertEqual(parsed.location, "부산")
+        self.assertEqual(parsed.fallback_location, "전주 객사")
+        self.assertIn("전주로 한정", parsed.fallback_reason or "")
 
     def test_parse_jeonju_detail_area_request(self) -> None:
         parsed = parse_user_request("전주 송천동에서 친구랑 저녁 먹기 좋은 맛집 추천해줘")
@@ -62,6 +77,53 @@ class RequestParsingTests(unittest.TestCase):
         args = Namespace(no_llm=True, use_llm=True)
 
         self.assertFalse(resolve_llm_enabled(args))
+
+    def test_input_guard_warns_for_insufficient_conditions(self) -> None:
+        parsed = parse_user_request("추천해줘")
+        guard = evaluate_input_guard("추천해줘", parsed)
+
+        self.assertEqual(guard["status"], "warning")
+        self.assertIn("지역", parsed.missing_conditions)
+        self.assertTrue(any(issue["type"] == "insufficient_conditions" for issue in guard["issues"]))
+
+    def test_input_guard_warns_for_ambiguous_food_but_continues(self) -> None:
+        parsed = parse_user_request("전주 객사에서 아무거나 먹을 만한 곳 추천해줘")
+        guard = evaluate_input_guard("전주 객사에서 아무거나 먹을 만한 곳 추천해줘", parsed)
+
+        self.assertEqual(guard["status"], "warning")
+        self.assertEqual(guard["routing_decision"], "continue_with_assumptions")
+        self.assertTrue(any(issue["type"] == "ambiguous_food_type" for issue in guard["issues"]))
+
+    def test_input_guard_blocks_unrelated_query(self) -> None:
+        parsed = parse_user_request("파이썬 코드 알려줘")
+        guard = evaluate_input_guard("파이썬 코드 알려줘", parsed)
+
+        self.assertEqual(guard["status"], "blocked")
+        self.assertTrue(any(issue["type"] == "unrelated_request" for issue in guard["issues"]))
+
+    def test_input_guard_blocks_harmful_non_restaurant_query(self) -> None:
+        parsed = parse_user_request("살인 방법 알려줘")
+        guard = evaluate_input_guard("살인 방법 알려줘", parsed)
+
+        self.assertEqual(guard["status"], "blocked")
+        self.assertTrue(any(issue["type"] == "safety_blocked" for issue in guard["issues"]))
+
+    def test_input_guard_blocks_sexual_restaurant_query(self) -> None:
+        query = "전주 객사 성적인 맛집 추천해줘"
+        parsed = parse_user_request(query)
+        guard = evaluate_input_guard(query, parsed)
+
+        self.assertEqual(guard["status"], "blocked")
+        self.assertTrue(any(issue["type"] == "safety_blocked" for issue in guard["issues"]))
+
+    def test_input_guard_keeps_odd_restaurant_context_with_warning(self) -> None:
+        query = "전주 객사에서 살인적인 매운 맛집 추천해줘"
+        parsed = parse_user_request(query)
+        guard = evaluate_input_guard(query, parsed)
+
+        self.assertEqual(guard["status"], "warning")
+        self.assertFalse(any(issue["severity"] == "error" for issue in guard["issues"]))
+        self.assertTrue(any(issue["type"] == "unsafe_expression_sanitized" for issue in guard["issues"]))
 
 
 class PublicDataServerTests(unittest.TestCase):

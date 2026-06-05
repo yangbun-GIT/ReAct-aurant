@@ -238,6 +238,33 @@ LLM 실행 옵션:
 - `--data-source local`: 공공데이터 호출 없이 기존 로컬 샘플 데이터셋 실행
 - 전주 외 지역 입력: TourAPI 지원 범위 제한을 Reflection으로 기록하고 로컬 데이터셋으로 fallback
 - API key 없음: `TOUR_API_SERVICE_KEY` 누락을 Observation으로 기록하고 로컬 데이터셋으로 fallback
+- 예외 처리 검증: `sample_outputs/stage4_exception_run_log.md`
+
+## 에러 대응 및 예외 처리
+
+Agent는 입력 검증과 도구 호출 결과를 모두 Observation으로 기록한 뒤, Reflection 단계에서 대안을 선택합니다. 단순히 오류를 출력하지 않고 가능한 경우 조건을 보완하거나 완화해 추천을 계속 진행합니다.
+
+| 예외 상황 | 처리 방식 |
+| --- | --- |
+| 존재하지 않는 지역 또는 전주 외 지역 | `Input Guard Agent`가 warning을 남기고, 도구가 `status=error`를 반환하면 `전주 객사` 기준으로 fallback 검색합니다. |
+| 검색 결과 없음 | 첫 검색 Observation의 `count=0`을 확인한 뒤 리뷰/평점 조건을 완화하고, 그래도 없으면 음식 종류 조건을 해제해 재검색합니다. |
+| 음식 종류가 너무 모호함 | `ambiguous_food_type` warning을 기록하고 특정 메뉴로 제한하지 않은 전체 음식점 검색을 수행합니다. |
+| API 호출 실패 | MCP `tools/call/result`에 error Observation을 기록하고, TourAPI 실패 시 로컬 샘플 데이터셋으로 fallback합니다. |
+| 사용자 조건 부족 | `insufficient_conditions` warning을 기록하고 지역, 목적, 가격대 등 누락 조건을 과제 기본값으로 보완합니다. 최종 답변에 보완 내용을 표시합니다. |
+| 맛집과 관계없는 입력 | `unrelated_request` error를 기록하고 도구 호출 없이 전주 맛집 추천 요청 예시를 제시합니다. |
+| 선정적, 폭력적, 불법적 요청 | `safety_blocked` error를 기록하고 도구 호출 없이 안전한 입력 형식으로 유도합니다. |
+| 맛집 맥락 안의 과한 표현 | 너무 엄격하게 차단하지 않고 `unsafe_expression_sanitized` warning으로 처리한 뒤, 지역/음식/거리/가격 같은 안전한 조건만 반영합니다. |
+
+예외 처리 검증 명령:
+
+```powershell
+.\.venv\Scripts\python react_client.py "추천해줘" --no-llm --data-source local --trace logs\stage4_insufficient_trace.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 우주젤리 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_no_results_trace.jsonl
+.\.venv\Scripts\python react_client.py "부산 서면 근처에서 친구랑 저녁 먹기 좋은 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_unsupported_region_trace.jsonl
+.\.venv\Scripts\python react_client.py "파이썬 코드 알려줘" --no-llm --data-source local --trace logs\stage4_unrelated_trace.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 성적인 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_safety_trace.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사에서 살인적인 매운 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_contextual_safety_trace.jsonl
+```
 
 ## 외부 API 사용 방법
 
@@ -277,6 +304,7 @@ Kakao Local API, Naver Search API, Google Places API는 과금 또는 키 관리
 - 실행 환경: `requirements.txt`
 - README: `README.md`
 - 실행 로그: `sample_outputs/jeonju_run_log.md`
+- 예외 처리 실행 로그: `sample_outputs/stage4_exception_run_log.md`
 - ReAct 도구 호출 trace: `sample_outputs/jeonju_trace_sample.jsonl`
 - Agentic Design Pattern 설명: README의 `Agentic Design Pattern` 섹션
 - 외부 API 사용 방법: README의 `외부 API 사용 방법` 섹션
