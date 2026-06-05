@@ -1,6 +1,7 @@
 import unittest
 from argparse import Namespace
 
+from jeonju_gazetteer import JEONJU_SEARCH_AREAS
 from public_data_server import (
     _matches_food_query,
     _is_jeonju_restaurant,
@@ -75,6 +76,17 @@ class RequestParsingTests(unittest.TestCase):
 
                 self.assertEqual(parsed.location, expected_location)
                 self.assertFalse(any(issue["type"] == "unsupported_or_unresolved_location" for issue in guard["issues"]))
+
+    def test_all_registered_jeonju_aliases_parse_without_unsupported_warning(self) -> None:
+        for expected_area, config in JEONJU_SEARCH_AREAS.items():
+            for alias in config["aliases"]:
+                query = f"전주 {alias} 근처 한식 맛집 추천"
+                with self.subTest(alias=alias):
+                    parsed = parse_user_request(query)
+                    guard = evaluate_input_guard(query, parsed)
+
+                    self.assertEqual(parsed.location, f"전주 {expected_area}")
+                    self.assertFalse(any(issue["type"] == "unsupported_or_unresolved_location" for issue in guard["issues"]))
 
     def test_parse_freeform_jeonju_commercial_area_and_food(self) -> None:
         parsed = parse_user_request("전주 웨리단길 파스타 맛집 추천해줘")
@@ -215,6 +227,17 @@ class PublicDataServerTests(unittest.TestCase):
                 self.assertIsNotNone(search_area)
                 self.assertEqual(search_area["name"], expected_area)
                 self.assertIn("longitude", search_area)
+
+    def test_all_registered_jeonju_aliases_resolve_to_public_search_area(self) -> None:
+        for expected_area, config in JEONJU_SEARCH_AREAS.items():
+            for alias in config["aliases"]:
+                query = f"전주 {alias} 근처 맛집"
+                with self.subTest(alias=alias):
+                    search_area = _resolve_search_area(query)
+
+                    self.assertIsNotNone(search_area)
+                    self.assertEqual(search_area["name"], expected_area)
+                    self.assertIn("longitude", search_area)
 
     def test_food_query_matches_specific_menu_terms(self) -> None:
         restaurant = {
