@@ -83,7 +83,6 @@ FOOD_QUERY_TERMS = [
     "회",
     "해산물",
     "술집",
-    "주점",
     "막걸리",
     "전집",
     "파전",
@@ -155,7 +154,7 @@ WEATHER_CONDITION_KEYWORDS = {
     "맑음": ["맑은", "화창", "날씨 좋은"],
 }
 REQUESTED_WEATHER_HINTS = {
-    "비": ["파전", "해물파전", "막걸리", "전집", "주점", "술집", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "칼국수", "한식", "이동 거리 짧은 곳"],
+    "비": ["파전", "해물파전", "막걸리", "전집", "술집", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "칼국수", "한식", "이동 거리 짧은 곳"],
     "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "이동 거리 짧은 곳"],
     "추움": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "따뜻한 메뉴", "따뜻한메뉴", "국물", "한식", "실내 좌석"],
     "더움": ["냉면", "콩국수", "막국수", "초계국수", "물회", "빙수", "샐러드", "가벼운 식사", "카페", "실내 좌석"],
@@ -169,6 +168,7 @@ WEATHER_EXPECTATION_NOTES = {
     "맑음": "보편적인 기대: 날씨가 좋은 날은 도보 이동, 분위기, 카페나 브런치 선호를 추천 힌트로 적용했습니다.",
 }
 BAR_INTENT_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일", "이자카야"]
+BAR_CANDIDATE_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일", "이자카야", "막걸리", "전집", "파전", "해물파전"]
 ALCOHOL_INTENT_TERMS = [*BAR_INTENT_TERMS, "막걸리", "전집", "파전"]
 STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS)
 
@@ -395,6 +395,17 @@ def _contains_any(query: str, terms: list[str]) -> bool:
     return any(term in query for term in terms)
 
 
+def _contains_bar_intent(query: str) -> bool:
+    for term in BAR_INTENT_TERMS:
+        if term == "주점":
+            if re.search(r"(?<!전)주점", query):
+                return True
+            continue
+        if term in query:
+            return True
+    return False
+
+
 def _all_jeonju_alias_terms() -> list[str]:
     return jeonju_alias_terms()
 
@@ -414,7 +425,7 @@ def _non_cuisine_terms() -> set[str]:
 
 
 def detect_cuisine(query: str) -> str | None:
-    if _contains_any(query, BAR_INTENT_TERMS):
+    if _contains_bar_intent(query):
         return "술집"
     for term in FOOD_QUERY_TERMS:
         if term in query:
@@ -624,6 +635,8 @@ def _clean_detected_location_suffix(text: str, cuisine: str | None) -> str:
         cleaned,
     )
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,./")
+    if cleaned in {"점", "본점", "분점", "지점"} or len(cleaned) <= 1:
+        return ""
     return cleaned
 
 
@@ -958,7 +971,7 @@ def reflect_public_recommendations(
 def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -> bool:
     terms = [cuisine]
     if cuisine == "술집":
-        terms.extend([*BAR_INTENT_TERMS, "막걸리", "전집"])
+        terms.extend(BAR_CANDIDATE_MATCH_TERMS)
     elif cuisine in {"막걸리", "전집", "파전"}:
         terms.extend(["막걸리", "전집", "파전", "해물파전"])
     for term in FOOD_QUERY_TERMS:
@@ -975,6 +988,8 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
         ]
         if value
     )
+    if cuisine == "술집" and re.search(r"(?<!전)주점", blob):
+        return True
     return any(term and term in blob for term in terms)
 
 
@@ -993,13 +1008,23 @@ def build_public_final_answer(
     recommendations: list[dict[str, Any]],
     reflection: str,
 ) -> str:
+    source_names = {str(item.get("source")) for item in recommendations if item.get("source")}
+    if "Kakao Local API" in source_names:
+        source_label = "Kakao Local API"
+        limitation = "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 주소, 거리 중심으로 보강 검색했습니다."
+        missing_metric_label = "Kakao Local 미제공"
+    else:
+        source_label = "한국관광공사 TourAPI KorService2"
+        limitation = "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다."
+        missing_metric_label = "TourAPI 미제공"
+
     lines = [
         "최종 추천 결과",
         "",
         f"요청: {query}",
         f"분석 조건: {', '.join(parsed.extracted_conditions)}",
-        "데이터 출처: 한국관광공사 TourAPI KorService2",
-        "데이터 한계: TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다.",
+        f"데이터 출처: {source_label}",
+        f"데이터 한계: {limitation}",
         _weather_line(parsed, weather),
         f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
         "",
@@ -1022,9 +1047,10 @@ def build_public_final_answer(
         distance = restaurant.get("distance_m")
         distance_reference = restaurant.get("distance_reference") or parsed.location
         distance_text = f"{distance}m" if isinstance(distance, int) else "정보 없음"
-        rating_text = _public_value(restaurant.get("rating"), "TourAPI 미제공")
-        review_text = _public_value(restaurant.get("review_count"), "TourAPI 미제공")
-        price_text = _public_value(restaurant.get("average_price"), "TourAPI 미제공")
+        rating_text = _public_value(restaurant.get("rating"), missing_metric_label)
+        review_text = _public_value(restaurant.get("review_count"), missing_metric_label)
+        price_text = _public_value(restaurant.get("average_price"), missing_metric_label)
+        menu_fallback = "Kakao 장소 검색 키워드 정보" if restaurant.get("source") == "Kakao Local API" else "TourAPI 상세 메뉴 정보 없음"
         lines.extend(
             [
                 f"{index}. {restaurant['name']} ({restaurant.get('cuisine') or '음식점'})",
@@ -1033,12 +1059,14 @@ def build_public_final_answer(
                 f"- 거리: {distance_reference} 기준 {distance_text}",
                 f"- 평점/리뷰/가격대: 평점 {rating_text}, 리뷰 {review_text}, 가격대 {price_text}",
                 f"- 전화: {_public_value(restaurant.get('phone'))}",
-                f"- 대표 메뉴: {', '.join(menus) if menus else 'TourAPI 상세 메뉴 정보 없음'}",
+                f"- 대표 메뉴: {', '.join(menus) if menus else menu_fallback}",
                 f"- 영업 정보: {_public_value(operation.get('open_time'))}, 휴무 {_public_value(operation.get('rest_date'))}",
                 f"- 점수 근거: {score_reasons}",
-                "",
             ]
         )
+        if restaurant.get("place_url"):
+            lines.append(f"- 장소 링크: {restaurant.get('place_url')}")
+        lines.append("")
 
     lines.append(f"Reflection: {reflection}")
     return "\n".join(lines).strip()
@@ -1403,6 +1431,7 @@ async def run_agent(
                         tool
                         for tool in [
                             "search_tourapi_restaurants",
+                            "search_kakao_local_places",
                             "get_tourapi_restaurant_detail",
                             "rank_tourapi_restaurants",
                         ]
@@ -1510,11 +1539,16 @@ async def run_agent(
             messages.append({"role": "tool", "content": f"Observation: {public_search_observation.summary}"})
             public_search_payload = public_search_observation.data
             if public_search_payload.get("query", {}).get("food_filter_relaxed"):
+                strict_food_requested = parsed.cuisine in STRICT_PUBLIC_CUISINE_TERMS
                 relaxed_issue = {
                     "type": "food_filter_relaxed",
                     "severity": "warning",
                     "message": "요청한 음식 종류와 정확히 일치하는 공공데이터 후보가 부족합니다.",
-                    "recovery": "음식 종류 필터를 완화하고 전주 음식점 후보 전체를 거리와 상세정보 기준으로 다시 비교합니다.",
+                    "recovery": (
+                        "TourAPI 후보는 넓게 수집하되 최종 추천에서는 술집 의도를 엄격히 유지하고, 가능하면 Kakao Local API 보강 검색을 시도합니다."
+                        if strict_food_requested
+                        else "음식 종류 필터를 완화하고 전주 음식점 후보 전체를 거리와 상세정보 기준으로 다시 비교합니다."
+                    ),
                 }
                 parsed.handled_exceptions.append(relaxed_issue)
                 trace.write(
@@ -1566,6 +1600,70 @@ async def run_agent(
 
                 if public_ranked_candidates:
                     recommendations, deterministic_reflection = reflect_public_recommendations(public_ranked_candidates, parsed)
+                    source_for_answer = str(public_rank_payload.get("source") or "TourAPI KorService2")
+                    if (
+                        not recommendations
+                        and parsed.cuisine in STRICT_PUBLIC_CUISINE_TERMS
+                        and "search_kakao_local_places" in public_tools
+                    ):
+                        kakao_observation = await public_client.call_tool(
+                            ToolAction(
+                                agent_name="Public Data Agent",
+                                pattern="Tool Use Pattern",
+                                tool_name="search_kakao_local_places",
+                                tool_input={
+                                    "area": public_area,
+                                    "cuisine": parsed.cuisine,
+                                    "max_distance_m": parsed.max_distance_m,
+                                    "near_gaeksa": near_gaeksa,
+                                    "limit": 8,
+                                },
+                                mcp_server="public_data_server.py",
+                                thought_summary="Thought: TourAPI가 요청 음식 종류를 직접 충족하지 못해 Kakao Local API로 장소 후보를 보강 검색합니다.",
+                            )
+                        )
+                        messages.append({"role": "tool", "content": f"Observation: {kakao_observation.summary}"})
+                        kakao_payload = kakao_observation.data
+                        if kakao_payload.get("status") == "ok" and kakao_payload.get("count", 0) > 0:
+                            kakao_rank_observation = await public_client.call_tool(
+                                ToolAction(
+                                    agent_name="Public Data Agent",
+                                    pattern="ReAct Pattern",
+                                    tool_name="rank_tourapi_restaurants",
+                                    tool_input={
+                                        "candidates": kakao_payload.get("candidates", []),
+                                        "ranking_policy": build_ranking_policy(parsed, weather_observation.data, profile_observation.data),
+                                    },
+                                    mcp_server="public_data_server.py",
+                                    thought_summary="Thought: Kakao Local 후보를 거리, 카테고리, 요청 조건 일치도로 정렬합니다.",
+                                )
+                            )
+                            messages.append({"role": "tool", "content": f"Observation: {kakao_rank_observation.summary}"})
+                            kakao_rank_payload = kakao_rank_observation.data
+                            kakao_ranked = kakao_rank_payload.get("ranked_candidates", [])
+                            if kakao_ranked:
+                                recommendations, deterministic_reflection = reflect_public_recommendations(kakao_ranked, parsed)
+                                source_for_answer = str(kakao_rank_payload.get("source") or "Kakao Local API")
+                                deterministic_reflection = (
+                                    "TourAPI에서 요청 음식 종류를 직접 충족하는 후보가 부족해 Kakao Local API 보강 검색을 수행했습니다. "
+                                    + deterministic_reflection
+                                )
+                        else:
+                            kakao_issue = {
+                                "type": "kakao_local_unavailable",
+                                "severity": "warning",
+                                "message": "TourAPI 후보가 부족해 Kakao Local API 보강 검색을 시도했지만 사용할 수 없었습니다.",
+                                "recovery": kakao_payload.get("message", "KAKAO_REST_API_KEY가 있으면 Kakao Local API로 장소 후보를 보강할 수 있습니다."),
+                            }
+                            parsed.handled_exceptions.append(kakao_issue)
+                            trace.write(
+                                agent_name="Public Data Agent",
+                                pattern="Reflection Pattern",
+                                thought_summary="Kakao Local API 보강 검색이 실패해 기존 데이터 한계를 최종 답변에 표시합니다.",
+                                reflection=kakao_issue["recovery"],
+                                observation=kakao_payload,
+                                messages_count=len(messages),
+                            )
                     reflection = await run_llm_reflection(
                         query=query,
                         parsed=parsed,
@@ -1574,7 +1672,7 @@ async def run_agent(
                         trace=trace,
                         messages_count=len(messages),
                         use_llm=use_llm,
-                        data_source="TourAPI KorService2",
+                        data_source=source_for_answer,
                     )
                     trace.write(
                         agent_name="Reflection Reviewer",
@@ -1597,7 +1695,7 @@ async def run_agent(
                         trace=trace,
                         messages_count=len(messages),
                         use_llm=use_llm,
-                        data_source="TourAPI KorService2",
+                        data_source=source_for_answer,
                     )
                     messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
                     trace.write(

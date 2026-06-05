@@ -11,6 +11,7 @@ from public_data_server import (
     _resolve_search_area,
     _score_public_restaurant,
     _standardize_restaurant,
+    search_kakao_local_places,
     search_tourapi_restaurants,
 )
 from react_client import (
@@ -39,6 +40,12 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.purpose, "친구와 저녁")
         self.assertEqual(parsed.limit, 3)
         self.assertIn("지역=전주 객사", parsed.extracted_conditions)
+
+    def test_branch_name_jeonjujeom_does_not_create_bar_intent(self) -> None:
+        parsed = parse_user_request("평양옥류관 전주점 근처 맛집 추천")
+
+        self.assertNotEqual(parsed.cuisine, "술집")
+        self.assertEqual(parsed.location, "전주")
 
     def test_parse_unsupported_region_keeps_fallback_reason(self) -> None:
         parsed = parse_user_request("서울 홍대 근처에서 친구랑 저녁 먹기 좋은 맛집 추천해줘")
@@ -358,6 +365,26 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertFalse(_matches_food_query(restaurant, "술집"))
+
+    def test_bar_intent_does_not_match_jeonjujeom_branch_name(self) -> None:
+        restaurant = {
+            "name": "미르밀옥류관 본점",
+            "cuisine": "한식",
+            "address": "전북특별자치도 전주시 완산구 마전들로 71",
+            "overview": "평양 옥류관 전주점으로 시작한 냉면 전문점입니다.",
+            "signature_menu": ["평양냉면"],
+            "operation": {},
+        }
+
+        self.assertFalse(_matches_food_query(restaurant, "술집"))
+
+    @patch.dict("os.environ", {"KAKAO_REST_API_KEY": ""})
+    def test_kakao_local_search_reports_missing_key_as_observation(self) -> None:
+        result = search_kakao_local_places(area="전주 신시가지", cuisine="술집", max_distance_m=700)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["source"], "Kakao Local API")
+        self.assertIn("KAKAO_REST_API_KEY", result["message"])
 
     def test_public_rank_scores_jeonju_food_candidates(self) -> None:
         candidate = _standardize_restaurant(

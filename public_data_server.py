@@ -28,6 +28,7 @@ GAEKSA_COORDINATES = {
 CACHE_ROOT = Path("data/cache/tourapi")
 DEFAULT_CACHE_TTL = timedelta(hours=24)
 CONTENT_TYPE_RESTAURANT = "39"
+KAKAO_LOCAL_BASE_URL = "https://dapi.kakao.com/v2/local"
 
 CATEGORY_CUISINES = {
     "A05020100": "한식",
@@ -50,12 +51,13 @@ CUISINE_KEYWORDS = {
     "양식": ["파스타", "피자", "스테이크", "브런치", "리조또", "양식", "버거", "햄버거", "샐러드"],
     "아시아식": ["쌀국수", "베트남", "태국", "타이", "인도", "커리", "카레", "아시아"],
     "해산물": ["회", "횟집", "해산물", "생선", "조개", "초밥"],
-    "술집": ["술집", "주점", "혼술", "한잔", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인", "와인바", "칵테일"],
+    "술집": ["술집", "혼술", "한잔", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인", "와인바", "칵테일"],
 }
-BAR_DIRECT_MATCH_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "막걸리", "전집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"]
-STRICT_FOOD_QUERIES = {"술집", "주점", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"}
+BAR_DIRECT_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "막걸리", "전집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"]
+STRICT_FOOD_QUERIES = {"술집", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"}
+KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "맥주", "이자카야", "막걸리", "전집", "와인바", "칵테일"]
 WEATHER_EXPECTATION_MATCH_TERMS = {
-    "비": ["파전", "해물파전", "막걸리", "전집", "주점", "술집", "국밥", "찌개", "전골", "칼국수", "실내"],
+    "비": ["파전", "해물파전", "막걸리", "전집", "술집", "국밥", "찌개", "전골", "칼국수", "실내"],
     "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내"],
     "추움": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "온면"],
     "더움": ["냉면", "콩국수", "막국수", "초계국수", "물회", "빙수", "샐러드", "카페"],
@@ -193,6 +195,43 @@ def _tourapi_request(path: str, params: dict[str, Any], use_cache: bool = True) 
         "cache_key": cache_key,
         "payload": payload,
     }
+
+
+def _kakao_request(path: str, params: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "status": "error",
+            "source": "Kakao Local API",
+            "message": "KAKAO_REST_API_KEY가 없어 Kakao Local API 장소 검색을 건너뜁니다.",
+        }
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            response = client.get(
+                f"{KAKAO_LOCAL_BASE_URL}/{path.lstrip('/')}",
+                params={key: value for key, value in params.items() if value is not None},
+                headers={"Authorization": f"KakaoAK {api_key}"},
+            )
+        response.raise_for_status()
+        return {
+            "status": "ok",
+            "source": "Kakao Local API",
+            "payload": response.json(),
+        }
+    except httpx.HTTPStatusError as exc:
+        safe_text = _mask_secret(exc.response.text, api_key)
+        return {
+            "status": "error",
+            "source": "Kakao Local API",
+            "message": f"Kakao Local API HTTP 오류 {exc.response.status_code}: {safe_text[:300]}",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "source": "Kakao Local API",
+            "message": f"Kakao Local API 호출 실패: {exc}",
+        }
 
 
 def _tourapi_result(payload: dict[str, Any]) -> dict[str, str]:
@@ -442,6 +481,81 @@ def _standardize_restaurant(
     return restaurant
 
 
+def _infer_kakao_cuisine(document: dict[str, Any], requested_keyword: str | None = None) -> str:
+    blob = " ".join(
+        str(value)
+        for value in [
+            document.get("place_name"),
+            document.get("category_name"),
+            document.get("category_group_name"),
+            requested_keyword,
+        ]
+        if value
+    )
+    if _has_bar_place_signal(blob):
+        return "술집"
+    for cuisine, keywords in CUISINE_KEYWORDS.items():
+        if any(keyword in blob for keyword in keywords):
+            return cuisine
+    return document.get("category_group_name") or "음식점"
+
+
+def _standardize_kakao_place(
+    document: dict[str, Any],
+    reference_coordinates: dict[str, float] | None,
+    reference_name: str | None,
+    requested_keyword: str | None = None,
+) -> dict[str, Any]:
+    longitude = _float_or_none(document.get("x"))
+    latitude = _float_or_none(document.get("y"))
+    distance = _float_or_none(document.get("distance"))
+    if distance is None and reference_coordinates is not None:
+        distance = _distance_m(longitude, latitude, reference_coordinates)
+
+    address = document.get("road_address_name") or document.get("address_name") or None
+    category_name = document.get("category_name") or ""
+    place_url = document.get("place_url") or None
+    place_id = str(document.get("id") or document.get("place_name") or "")
+
+    return {
+        "restaurant_id": f"kakao:{place_id}",
+        "content_id": place_id,
+        "name": document.get("place_name") or "이름 없는 장소",
+        "location": "전주",
+        "address": address,
+        "cuisine": _infer_kakao_cuisine(document, requested_keyword),
+        "category_codes": {
+            "cat1": "KAKAO_LOCAL",
+            "cat2": document.get("category_group_code"),
+            "cat3": category_name,
+        },
+        "phone": document.get("phone") or None,
+        "image_url": None,
+        "thumbnail_url": None,
+        "longitude": longitude,
+        "latitude": latitude,
+        "distance_m": int(distance) if distance is not None else None,
+        "distance_reference": reference_name,
+        "rating": None,
+        "review_count": None,
+        "average_price": None,
+        "signature_menu": [requested_keyword] if requested_keyword else [],
+        "overview": f"Kakao Local category: {category_name}".strip(),
+        "operation": {
+            "open_time": None,
+            "rest_date": None,
+            "parking": None,
+            "reservation": None,
+        },
+        "source": "Kakao Local API",
+        "source_confidence": 0.86,
+        "modified_time": None,
+        "place_url": place_url,
+        "recommendation_reason": "Kakao Local API 장소 검색 결과의 위치, 카테고리, 거리 정보를 반영했습니다.",
+        "source_note": "Kakao Local API는 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하며 평점/리뷰/가격대는 제공하지 않습니다.",
+    }
+
+
 def _text_blob(restaurant: dict[str, Any]) -> str:
     return " ".join(
         str(value)
@@ -474,11 +588,18 @@ def _food_query_terms(food_query: str | None) -> list[str]:
         if term and term not in FOOD_QUERY_STOPWORDS and term not in cleaned_terms:
             cleaned_terms.append(term)
     if any(term in STRICT_FOOD_QUERIES for term in cleaned_terms):
-        priority_terms = ["술집", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "주점", "맥주", "와인바", "칵테일"]
+        priority_terms = ["술집", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "와인바", "칵테일"]
         return [term for term in priority_terms if term in cleaned_terms] + [
             term for term in cleaned_terms if term not in priority_terms
         ]
     return cleaned_terms
+
+
+def _has_bar_place_signal(blob: str) -> bool:
+    if any(term in blob for term in BAR_DIRECT_MATCH_TERMS):
+        return True
+    # "주점" is a valid category term, but it appears inside "전주점" in branch names.
+    return bool(re.search(r"(?<!전)주점", blob))
 
 
 def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> bool:
@@ -488,7 +609,7 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
     cuisine = str(restaurant.get("cuisine") or "")
     blob = _text_blob(restaurant)
     if str(food_query or "").strip() == "술집":
-        return any(term in blob for term in BAR_DIRECT_MATCH_TERMS)
+        return _has_bar_place_signal(blob)
     return any(term == cuisine or term in blob for term in terms)
 
 
@@ -578,7 +699,7 @@ def _score_public_restaurant(
     if "저녁" in purpose and restaurant.get("cuisine") != "카페":
         score += 5
         reasons.append("카페보다 식사 후보에 가까움")
-    if any(term in purpose for term in ["혼술", "술자리"]) and any(term in blob for term in ["술집", "주점", "막걸리", "전집", "파전", "포차", "호프", "펍", "이자카야", "맥주", "와인", "칵테일"]):
+    if any(term in purpose for term in ["혼술", "술자리"]) and _has_bar_place_signal(blob):
         score += 12
         reasons.append("술자리 목적과 직접 관련된 메뉴/업종 단서")
 
@@ -834,6 +955,126 @@ def search_tourapi_restaurants(
 
 
 @mcp.tool()
+def search_kakao_local_places(
+    area: str = "전주",
+    keyword: str | None = None,
+    cuisine: str | None = None,
+    max_distance_m: int | None = None,
+    near_gaeksa: bool = False,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Kakao Local API에서 전주 장소 후보를 검색합니다. 키가 없으면 error Observation을 반환합니다."""
+    if "전주" not in (area or ""):
+        return {
+            "status": "error",
+            "source": "Kakao Local API",
+            "message": "현재 Kakao Local 보강 검색 범위는 전주로 한정되어 있습니다.",
+            "candidates": [],
+        }
+
+    search_area = _resolve_search_area_for_query(area, near_gaeksa=near_gaeksa, use_cache=True)
+    if search_area is None:
+        return {
+            "status": "error",
+            "source": "Kakao Local API",
+            "message": "전주 세부 위치 좌표를 해석하지 못해 Kakao Local 반경 검색을 수행하지 않았습니다.",
+            "candidates": [],
+        }
+
+    radius = min(max(int(max_distance_m or search_area["radius"]), 300), 20000)
+    reference_coordinates = {"longitude": search_area["longitude"], "latitude": search_area["latitude"]}
+    requested = (cuisine or keyword or "맛집").strip()
+    if requested == "술집":
+        queries = KAKAO_BAR_KEYWORDS
+    else:
+        queries = [requested]
+
+    places: list[dict[str, Any]] = []
+    last_error: dict[str, Any] | None = None
+    for query in queries:
+        result = _kakao_request(
+            "search/keyword.json",
+            {
+                "query": query,
+                "x": search_area["longitude"],
+                "y": search_area["latitude"],
+                "radius": radius,
+                "sort": "distance",
+                "size": min(max(limit, 1), 15),
+            },
+        )
+        if result["status"] != "ok":
+            last_error = result
+            continue
+        for document in result.get("payload", {}).get("documents", []):
+            places.append(
+                _standardize_kakao_place(
+                    document,
+                    reference_coordinates=reference_coordinates,
+                    reference_name=search_area["name"],
+                    requested_keyword=query,
+                )
+            )
+
+    places = _merge_restaurants(places)
+    places = [place for place in places if _is_jeonju_restaurant(place)]
+    if max_distance_m:
+        places = [
+            place
+            for place in places
+            if place.get("distance_m") is None or int(place["distance_m"]) <= int(max_distance_m)
+        ]
+    if cuisine == "술집":
+        places = [place for place in places if _matches_food_query(place, "술집")]
+
+    places.sort(
+        key=lambda place: (
+            place.get("distance_m") is None,
+            int(place.get("distance_m") if place.get("distance_m") is not None else 999999),
+            place.get("name") or "",
+        )
+    )
+
+    if not places and last_error is not None:
+        return {
+            **last_error,
+            "query": {
+                "area": area,
+                "keyword": keyword,
+                "cuisine": cuisine,
+                "max_distance_m": max_distance_m,
+                "target_area": search_area["name"],
+                "radius": radius,
+                "queries": queries,
+            },
+            "candidates": [],
+        }
+
+    return {
+        "status": "ok" if places else "error",
+        "source": "Kakao Local API",
+        "query": {
+            "area": area,
+            "keyword": keyword,
+            "cuisine": cuisine,
+            "max_distance_m": max_distance_m,
+            "target_area": search_area["name"],
+            "radius": radius,
+            "queries": queries,
+        },
+        "unavailable_filters": ["rating", "review_count", "price_level"],
+        "data_limitations": "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 거리, 주소로만 보강 검색합니다.",
+        "count": len(places[: max(1, limit)]),
+        "candidates": places[: max(1, limit)],
+        "message": (
+            f"Kakao Local API로 전주 {search_area['name']} 주변 장소 후보를 조회했습니다."
+            if places
+            else "Kakao Local API에서 조건에 맞는 장소 후보를 확보하지 못했습니다."
+        ),
+    }
+
+
+@mcp.tool()
 def get_tourapi_restaurant_detail(content_id: str, use_cache: bool = True) -> dict[str, Any]:
     """TourAPI content_id에 해당하는 음식점 상세 정보를 조회합니다."""
     safe_content_id = (content_id or "").replace("tourapi:", "").strip()
@@ -892,6 +1133,8 @@ def rank_tourapi_restaurants(
     """TourAPI 후보를 공공데이터에 맞는 기준으로 점수화하고 정렬합니다."""
     policy = ranking_policy or {}
     ranked_candidates: list[dict[str, Any]] = []
+    source_names = {candidate.get("source") for candidate in candidates if candidate.get("source")}
+    source_name = "Kakao Local API" if "Kakao Local API" in source_names else "TourAPI KorService2"
 
     for candidate in candidates:
         score, reasons = _score_public_restaurant(candidate, policy)
@@ -899,7 +1142,9 @@ def rank_tourapi_restaurants(
         ranked["score"] = score
         ranked["score_reasons"] = reasons
         ranked["recommendation_reason"] = (
-            "한국관광공사 TourAPI 등록 정보 기준으로 주소, 거리, 상세정보 충실도, 요청 조건 일치도를 반영했습니다."
+            "Kakao Local API 장소 검색 결과 기준으로 주소, 거리, 카테고리, 요청 조건 일치도를 반영했습니다."
+            if ranked.get("source") == "Kakao Local API"
+            else "한국관광공사 TourAPI 등록 정보 기준으로 주소, 거리, 상세정보 충실도, 요청 조건 일치도를 반영했습니다."
         )
         ranked_candidates.append(ranked)
 
@@ -914,10 +1159,10 @@ def rank_tourapi_restaurants(
 
     return {
         "status": "ok" if ranked_candidates else "error",
-        "source": "TourAPI KorService2",
+        "source": source_name,
         "ranking_policy": policy,
         "ranked_candidates": ranked_candidates,
-        "message": "공공데이터 후보 정렬을 완료했습니다." if ranked_candidates else "정렬할 공공데이터 후보가 없습니다.",
+        "message": "장소 후보 정렬을 완료했습니다." if ranked_candidates else "정렬할 장소 후보가 없습니다.",
     }
 
 

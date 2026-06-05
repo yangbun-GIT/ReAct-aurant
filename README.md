@@ -19,7 +19,7 @@
 ## 구현 요약
 
 - 기본 데이터 경로는 `--data-source auto`입니다. 한국관광공사 TourAPI 공공데이터를 먼저 시도하고, 키가 없거나 지원 범위를 벗어나면 로컬 샘플 데이터셋으로 fallback합니다.
-- 과금이 발생하지 않도록 Kakao Local API, Naver Search API, Google Places API는 사용하지 않습니다.
+- 과금이 발생하지 않도록 기본 실행은 TourAPI와 로컬 샘플 데이터셋을 우선 사용합니다. 단, `KAKAO_REST_API_KEY`가 있으면 TourAPI가 약한 `술집`, `포차`, `호프`, `이자카야` 같은 장소성 의도에 한해 Kakao Local API를 선택 보강 도구로 호출합니다.
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
@@ -27,7 +27,7 @@
 - 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. 사전에 없는 전주 지명은 TourAPI `searchKeyword2`로 좌표를 찾아 반경 검색을 시도합니다.
 - 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
 - 비/눈/더움/추움/맑음 같은 날씨 조건은 사용자가 입력한 조건을 실제 조회 날씨보다 우선합니다. 비 오는 날은 파전, 막걸리, 따뜻한 국물, 가까운 실내 좌석처럼 보편적인 기대를 힌트로 반영하고, 최종 답변에도 그 근거를 표시합니다.
-- `술집`, `혼술`, `포차`, `호프`, `이자카야` 등 술자리 의도는 일반 한식 후보로 임의 대체하지 않습니다. TourAPI에서 직접 맞는 후보가 없으면 후보 부족과 데이터 한계를 Reflection에 표시합니다.
+- `술집`, `혼술`, `포차`, `호프`, `이자카야` 등 술자리 의도는 일반 한식 후보로 임의 대체하지 않습니다. TourAPI에서 직접 맞는 후보가 없으면 Kakao Local API 보강을 시도하고, 키가 없거나 보강 후보가 없으면 후보 부족과 데이터 한계를 Reflection에 표시합니다.
 
 ## Agent 구조 점검 기준
 
@@ -103,7 +103,8 @@ LLM Agent 환경 변수:
 
 선택 환경 변수:
 
-- `KAKAO_REST_API_KEY`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `GOOGLE_PLACES_API_KEY`: 비용 및 키 관리 부담 때문에 기본 구현에서는 사용하지 않습니다.
+- `KAKAO_REST_API_KEY`: Kakao Developers에서 발급받는 REST API 키입니다. 값이 있으면 Agent가 TourAPI 후보만으로 술집/포차/호프/이자카야 의도를 충족하지 못할 때 Kakao Local API 키워드 검색을 보강 도구로 호출합니다. Kakao Local은 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하지만 평점/리뷰 수/가격대는 제공하지 않으므로 해당 값은 임의 생성하지 않습니다.
+- `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `GOOGLE_PLACES_API_KEY`: 현재 기본 실행에서는 사용하지 않습니다. 추가 적용 시 비용, 호출 제한, 제출 키 관리 정책을 먼저 확인해야 합니다.
 
 로컬 관리자 웹 대시보드 환경 변수:
 
@@ -218,6 +219,7 @@ docker compose up --build
 `public_data_server.py`
 
 - `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다. 술집 의도는 막걸리, 전집, 포차, 호프, 이자카야 등 직접 관련 키워드로 확장하되 일반 식당으로 무리하게 채우지 않습니다.
+- `search_kakao_local_places(area, keyword, cuisine, max_distance_m, near_gaeksa, limit)`: `KAKAO_REST_API_KEY`가 있을 때 Kakao Local API 키워드 검색으로 TourAPI가 약한 장소성 후보를 보강합니다. 현재는 전주 범위로 제한하며, 키가 없으면 error Observation을 반환해 Agent가 데이터 한계를 설명하도록 합니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.

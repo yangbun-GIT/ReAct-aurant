@@ -627,12 +627,11 @@ def render_dashboard() -> str:
       color: var(--text);
       border: 0;
       border-radius: 6px;
-      min-height: 64px;
       box-shadow: var(--shadow-soft);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 8px;
+      grid-template-columns: minmax(0, 1fr) 64px;
       align-items: stretch;
+      min-height: 126px;
       overflow: hidden;
     }}
     .history-item:hover {{
@@ -644,9 +643,14 @@ def render_dashboard() -> str:
       background: transparent;
       color: var(--text);
       text-align: left;
-      padding: 11px 12px;
-      min-height: 64px;
+      padding: 12px 14px;
       font-weight: 700;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: stretch;
+      gap: 7px;
     }}
     .history-open:hover {{
       background: transparent;
@@ -659,7 +663,7 @@ def render_dashboard() -> str:
       border-radius: 0;
       background: #fff7f7;
       color: var(--error);
-      min-width: 58px;
+      min-width: 64px;
       padding: 8px;
       font-size: 12px;
     }}
@@ -681,13 +685,29 @@ def render_dashboard() -> str:
       border-color: #fca5a5;
       color: #991b1b;
     }}
+    .history-title {{
+      line-height: 1.35;
+      display: block;
+      max-height: 2.7em;
+      overflow: hidden;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+      flex-shrink: 0;
+    }}
     .history-meta {{
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
+      display: grid;
+      gap: 2px;
       color: var(--muted);
       font-size: 12px;
       margin-top: 4px;
+      font-weight: 600;
+      min-width: 0;
+      flex-shrink: 0;
+    }}
+    .history-meta span {{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }}
     .workspace {{
       display: grid;
@@ -1318,10 +1338,11 @@ def render_dashboard() -> str:
         row.className = 'history-item';
         row.innerHTML = `
           <button class="history-open" type="button">
-            <div>${{escapeHtml(item.query)}}</div>
+            <div class="history-title">${{escapeHtml(item.query)}}</div>
             <div class="history-meta">
               <span>${{escapeHtml(item.created_at)}}</span>
-              <span>${{escapeHtml(item.effective_data_source || item.data_source || '-')}} · ${{escapeHtml(item.effective_llm_mode || item.llm_mode || '-')}} · events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
+              <span>${{escapeHtml(item.data_source || '-')}} → ${{escapeHtml(item.effective_data_source || '-')}} · ${{escapeHtml(item.llm_mode || '-')}} → ${{escapeHtml(item.effective_llm_mode || '-')}}</span>
+              <span>events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
             </div>
           </button>
           <button class="delete-run" type="button" aria-label="실행 삭제">삭제</button>
