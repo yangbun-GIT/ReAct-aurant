@@ -930,6 +930,8 @@ def reflect_public_recommendations(
     accepted: list[dict[str, Any]] = []
     warnings: list[str] = []
     strict_food = bool(parsed.cuisine and parsed.cuisine in STRICT_PUBLIC_CUISINE_TERMS)
+    source_names = {str(candidate.get("source")) for candidate in ranked_candidates if candidate.get("source")}
+    uses_kakao = "Kakao Local API" in source_names
 
     for candidate in ranked_candidates:
         if parsed.cuisine and not _public_candidate_matches_cuisine(candidate, parsed.cuisine):
@@ -952,17 +954,23 @@ def reflect_public_recommendations(
     elif len(accepted) < parsed.limit and strict_food:
         if accepted:
             warnings.append(
-                f"{parsed.cuisine} 의도는 엄격히 유지했습니다. TourAPI에서 직접 매칭되는 후보가 {len(accepted)}곳뿐이라 일반 식당으로 채우지 않았습니다."
+                f"{parsed.cuisine} 의도는 엄격히 유지했습니다. {'Kakao Local API' if uses_kakao else 'TourAPI'}에서 직접 매칭되는 후보가 {len(accepted)}곳뿐이라 일반 식당으로 채우지 않았습니다."
             )
         else:
             warnings.append(
-                f"TourAPI에서 {parsed.cuisine} 의도와 직접 맞는 후보를 찾지 못했습니다. 일반 음식점으로 임의 대체하지 않고 데이터 한계를 표시합니다."
+                f"{'Kakao Local API' if uses_kakao else 'TourAPI'}에서 {parsed.cuisine} 의도와 직접 맞는 후보를 찾지 못했습니다. 일반 음식점으로 임의 대체하지 않고 데이터 한계를 표시합니다."
             )
 
-    reflection = (
-        "공공데이터 검토 완료: 한국관광공사 TourAPI의 주소, 좌표, 상세정보 충실도, 요청 조건 일치도를 확인했습니다. "
-        "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
-    )
+    if uses_kakao:
+        reflection = (
+            "Kakao Local API 검토 완료: 장소명, 주소, 좌표, 카테고리, 거리, 요청 조건 일치도를 확인했습니다. "
+            "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
+        )
+    else:
+        reflection = (
+            "공공데이터 검토 완료: 한국관광공사 TourAPI의 주소, 좌표, 상세정보 충실도, 요청 조건 일치도를 확인했습니다. "
+            "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
+        )
     if warnings:
         reflection += " " + " ".join(warnings)
     return accepted[: parsed.limit], reflection

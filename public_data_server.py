@@ -793,12 +793,13 @@ def _score_public_restaurant(
             score -= 100
             reasons.append(f"요청 거리 {int(max_distance_m)}m 초과")
 
+    source_label = "Kakao Local" if restaurant.get("source") == "Kakao Local API" else "TourAPI"
     if ranking_policy.get("min_rating") is not None and restaurant.get("rating") is None:
-        reasons.append("TourAPI 평점 미제공")
+        reasons.append(f"{source_label} 평점 미제공")
     if ranking_policy.get("min_review_count") is not None and restaurant.get("review_count") is None:
-        reasons.append("TourAPI 리뷰 수 미제공")
+        reasons.append(f"{source_label} 리뷰 수 미제공")
     if ranking_policy.get("max_price_level") is not None and restaurant.get("average_price") is None:
-        reasons.append("TourAPI 가격대 미제공")
+        reasons.append(f"{source_label} 가격대 미제공")
 
     if not restaurant.get("address"):
         score -= 5

@@ -188,10 +188,7 @@ def build_code_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def infer_effective_data_source(data_source: str, events: list[dict[str, Any]], final_answer: str = "") -> str:
     actions = [str(event.get("action_name") or "") for event in events]
     used_kakao = any(action == "search_kakao_local_places" for action in actions) or "Kakao Local API" in final_answer
-    used_tourapi_action = any(
-        action in {"search_tourapi_restaurants", "get_tourapi_restaurant_detail", "rank_tourapi_restaurants"}
-        for action in actions
-    )
+    used_tourapi_action = any(action in {"search_tourapi_restaurants", "get_tourapi_restaurant_detail"} for action in actions)
     used_public = used_tourapi_action or (not used_kakao and "TourAPI" in final_answer)
     used_local = any(action in {"search_restaurants", "get_restaurant_detail", "rank_restaurants"} for action in actions)
 
