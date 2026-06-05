@@ -1,7 +1,13 @@
 import unittest
 from argparse import Namespace
 
-from public_data_server import _resolve_search_area, _score_public_restaurant, _standardize_restaurant, search_tourapi_restaurants
+from public_data_server import (
+    _matches_food_query,
+    _resolve_search_area,
+    _score_public_restaurant,
+    _standardize_restaurant,
+    search_tourapi_restaurants,
+)
 from react_client import ParsedRequest, parse_llm_json, parse_user_request, reflect_public_recommendations, resolve_llm_enabled, resolve_query
 
 
@@ -33,6 +39,19 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.fallback_location, "전주 객사")
         self.assertIn("지역=전주 송천동", parsed.extracted_conditions)
         self.assertFalse(any(condition.startswith("지역보정=") for condition in parsed.extracted_conditions))
+
+    def test_parse_freeform_jeonju_commercial_area_and_food(self) -> None:
+        parsed = parse_user_request("전주 웨리단길 파스타 맛집 추천해줘")
+
+        self.assertEqual(parsed.location, "전주 웨리단길")
+        self.assertEqual(parsed.cuisine, "파스타")
+        self.assertIn("음식종류=파스타", parsed.extracted_conditions)
+
+    def test_parse_long_jeonju_alias_before_parent_area(self) -> None:
+        parsed = parse_user_request("전주 전북대 구정문 소바 맛집 알려줘")
+
+        self.assertEqual(parsed.location, "전주 전북대 구정문")
+        self.assertEqual(parsed.cuisine, "소바")
 
     def test_resolve_query_accepts_positional_natural_language(self) -> None:
         args = Namespace(query=None, natural_query=["전주", "효자동", "한식", "추천"])
@@ -73,7 +92,7 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertIsNone(restaurant["rating"])
         self.assertIsNone(restaurant["review_count"])
         self.assertNotIn("<", restaurant["overview"])
-        self.assertIn("TourAPI는 리뷰 수와 평점을 제공하지 않아", restaurant["source_note"])
+        self.assertIn("TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아", restaurant["source_note"])
 
     def test_resolve_search_area_supports_jeonju_detail_areas(self) -> None:
         search_area = _resolve_search_area("전주 효자동 맛집")
@@ -81,6 +100,24 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertIsNotNone(search_area)
         self.assertEqual(search_area["name"], "효자동")
         self.assertIn("longitude", search_area)
+
+    def test_resolve_search_area_prefers_longest_alias(self) -> None:
+        search_area = _resolve_search_area("전주 전북대 구정문 소바 맛집")
+
+        self.assertIsNotNone(search_area)
+        self.assertEqual(search_area["name"], "전북대 구정문")
+
+    def test_food_query_matches_specific_menu_terms(self) -> None:
+        restaurant = {
+            "name": "테스트 파스타",
+            "cuisine": "양식",
+            "address": "전주시 완산구",
+            "overview": "크림 파스타와 리조또를 판매합니다.",
+            "signature_menu": ["크림 파스타"],
+            "operation": {},
+        }
+
+        self.assertTrue(_matches_food_query(restaurant, "파스타"))
 
     def test_public_rank_scores_jeonju_food_candidates(self) -> None:
         candidate = _standardize_restaurant(
@@ -136,7 +173,7 @@ class PublicReflectionTests(unittest.TestCase):
         recommendations, reflection = reflect_public_recommendations(ranked, parsed)
 
         self.assertEqual([item["restaurant_id"] for item in recommendations], ["tourapi:1", "tourapi:3"])
-        self.assertIn("TourAPI는 리뷰 수와 평점을 제공하지 않아", reflection)
+        self.assertIn("TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아", reflection)
 
 
 if __name__ == "__main__":

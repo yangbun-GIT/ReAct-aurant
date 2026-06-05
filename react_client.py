@@ -27,7 +27,9 @@ DEFAULT_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛�
 DEFAULT_LOCATION = "전주 객사"
 JEONJU_DETAIL_AREA_ALIASES: dict[str, list[str]] = {
     "객사": ["객사", "객리단길", "전주객사"],
+    "웨리단길": ["웨리단길", "전주웨리단길", "웨딩거리"],
     "한옥마을": ["한옥마을", "전주한옥마을"],
+    "전북대 구정문": ["전북대 구정문", "전대 구정문", "구정문"],
     "전북대": ["전북대", "전북대학교", "전대"],
     "송천동": ["송천동", "송천"],
     "효자동": ["효자동", "신시가지"],
@@ -39,7 +41,73 @@ JEONJU_DETAIL_AREA_ALIASES: dict[str, list[str]] = {
     "중화산동": ["중화산동", "중화산"],
     "전주역": ["전주역", "역 앞", "역앞"],
     "전주터미널": ["터미널", "고속버스터미널", "시외버스터미널", "전주터미널"],
+    "완산구": ["완산구"],
+    "덕진구": ["덕진구"],
+    "중앙동": ["중앙동", "고사동"],
+    "풍남동": ["풍남동", "전동", "남부시장"],
+    "금암동": ["금암동", "금암"],
+    "덕진동": ["덕진동", "덕진공원"],
+    "우아동": ["우아동", "우아"],
+    "만성동": ["만성동", "만성"],
 }
+
+FOOD_QUERY_TERMS = [
+    "한정식",
+    "콩나물국밥",
+    "비빔밥",
+    "국밥",
+    "백반",
+    "찌개",
+    "칼국수",
+    "한식",
+    "초밥",
+    "스시",
+    "돈카츠",
+    "돈까스",
+    "라멘",
+    "우동",
+    "소바",
+    "이자카야",
+    "일식",
+    "마라탕",
+    "훠궈",
+    "짬뽕",
+    "짜장",
+    "중식",
+    "파스타",
+    "피자",
+    "스테이크",
+    "브런치",
+    "리조또",
+    "양식",
+    "쌀국수",
+    "베트남",
+    "태국",
+    "커리",
+    "카레",
+    "아시아",
+    "떡볶이",
+    "김밥",
+    "분식",
+    "카페",
+    "디저트",
+    "베이커리",
+    "빵",
+    "케이크",
+    "고기",
+    "삼겹살",
+    "갈비",
+    "곱창",
+    "막창",
+    "족발",
+    "보쌈",
+    "치킨",
+    "회",
+    "해산물",
+    "술집",
+    "와인",
+    "칵테일",
+]
 
 
 class ParsedRequest(BaseModel):
@@ -255,11 +323,47 @@ def parse_llm_json(content: str) -> dict[str, Any]:
         return {"raw_plan": content}
 
 
-def detect_jeonju_location(query: str) -> str | None:
+def detect_cuisine(query: str) -> str | None:
+    for term in FOOD_QUERY_TERMS:
+        if term in query:
+            return term
+    match = re.search(r"([가-힣A-Za-z]+)\s*(?:맛집|음식점|식당|전문점)", query)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate and candidate not in {"전주", "근처", "주변", "좋은", "괜찮은"}:
+            return candidate
+    return None
+
+
+def _clean_detected_location_suffix(text: str, cuisine: str | None) -> str:
+    cleaned = text
+    if cuisine:
+        cleaned = cleaned.replace(cuisine, " ")
+    for term in FOOD_QUERY_TERMS:
+        cleaned = cleaned.replace(term, " ")
+    cleaned = re.sub(
+        r"(맛집|음식점|식당|추천|근처|주변|가까운|에서|으로|쪽|부근|찾아줘|알려줘|좋은|괜찮은|친구|저녁|점심|아침|혼밥|회식|데이트)",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,./")
+    return cleaned
+
+
+def detect_jeonju_location(query: str, cuisine: str | None = None) -> str | None:
+    matched: tuple[int, str] | None = None
     for area_name, aliases in JEONJU_DETAIL_AREA_ALIASES.items():
-        if any(alias in query for alias in aliases):
-            return f"전주 {area_name}"
+        for alias in aliases:
+            if alias in query and (matched is None or len(alias) > matched[0]):
+                matched = (len(alias), area_name)
+    if matched is not None:
+        return f"전주 {matched[1]}"
+
     if "전주" in query:
+        after_jeonju = re.split(r"전주시?|전주", query, maxsplit=1)[-1]
+        suffix = _clean_detected_location_suffix(after_jeonju, cuisine)
+        if suffix:
+            return f"전주 {suffix}"
         return "전주"
     return None
 
@@ -268,6 +372,7 @@ def parse_user_request(query: str) -> ParsedRequest:
     conditions: list[str] = []
     fallback_location: str | None = None
     fallback_reason: str | None = None
+    cuisine = detect_cuisine(query)
 
     if "홍대" in query:
         location = "서울 홍대"
@@ -277,7 +382,7 @@ def parse_user_request(query: str) -> ParsedRequest:
         location = "존재하지 않는 지역"
         fallback_location = DEFAULT_LOCATION
         fallback_reason = "요청 지역을 지원하지 않아 과제 기본 지역인 전주 객사로 대체합니다."
-    elif detected_location := detect_jeonju_location(query):
+    elif detected_location := detect_jeonju_location(query, cuisine):
         location = detected_location
         if location != DEFAULT_LOCATION:
             fallback_location = DEFAULT_LOCATION
@@ -289,12 +394,8 @@ def parse_user_request(query: str) -> ParsedRequest:
     if fallback_reason and not (location.startswith("전주") and fallback_location == DEFAULT_LOCATION):
         conditions.append(f"지역보정={fallback_reason}")
 
-    cuisine: str | None = None
-    for candidate in ["한식", "일식", "양식", "분식", "카페", "고기"]:
-        if candidate in query:
-            cuisine = candidate
-            conditions.append(f"음식종류={candidate}")
-            break
+    if cuisine:
+        conditions.append(f"음식종류={cuisine}")
 
     purpose_parts: list[str] = []
     if "친구" in query:
@@ -355,6 +456,9 @@ def build_ranking_policy(
         "purpose": parsed.purpose,
         "cuisine": parsed.cuisine,
         "max_price_level": parsed.max_price_level,
+        "min_rating": parsed.min_rating,
+        "min_review_count": parsed.min_review_count,
+        "max_distance_m": parsed.max_distance_m,
         "weather": weather.get("weather"),
         "weather_hints": weather.get("food_hints", []),
         "preferred_cuisines": profile.get("preferred_cuisines", []),
@@ -457,7 +561,7 @@ def reflect_public_recommendations(
     warnings: list[str] = []
 
     for candidate in ranked_candidates:
-        if parsed.cuisine and candidate.get("cuisine") and candidate.get("cuisine") != parsed.cuisine:
+        if parsed.cuisine and not _public_candidate_matches_cuisine(candidate, parsed.cuisine):
             warnings.append(f"{candidate.get('name', '후보')}: 요청 음식 종류와 달라 후순위로 두었습니다.")
             continue
         accepted.append(candidate)
@@ -477,11 +581,30 @@ def reflect_public_recommendations(
 
     reflection = (
         "공공데이터 검토 완료: 한국관광공사 TourAPI의 주소, 좌표, 상세정보 충실도, 요청 조건 일치도를 확인했습니다. "
-        "TourAPI는 리뷰 수와 평점을 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
+        "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
     )
     if warnings:
         reflection += " " + " ".join(warnings)
     return accepted[: parsed.limit], reflection
+
+
+def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -> bool:
+    terms = [cuisine]
+    for term in FOOD_QUERY_TERMS:
+        if cuisine in term or term in cuisine:
+            terms.append(term)
+    blob = " ".join(
+        str(value)
+        for value in [
+            candidate.get("name"),
+            candidate.get("cuisine"),
+            candidate.get("address"),
+            candidate.get("overview"),
+            " ".join(candidate.get("signature_menu") or []),
+        ]
+        if value
+    )
+    return any(term and term in blob for term in terms)
 
 
 def _public_value(value: Any, fallback: str = "정보 없음") -> str:
@@ -505,7 +628,7 @@ def build_public_final_answer(
         f"요청: {query}",
         f"분석 조건: {', '.join(parsed.extracted_conditions)}",
         "데이터 출처: 한국관광공사 TourAPI KorService2",
-        "데이터 한계: TourAPI는 리뷰 수와 평점을 제공하지 않아 임의 수치를 생성하지 않았습니다.",
+        "데이터 한계: TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다.",
         f"날씨 반영: {weather.get('location', parsed.location)} 기준 {weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도",
         f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
         "",
@@ -522,12 +645,16 @@ def build_public_final_answer(
         distance = restaurant.get("distance_m")
         distance_reference = restaurant.get("distance_reference") or parsed.location
         distance_text = f"{distance}m" if isinstance(distance, int) else "정보 없음"
+        rating_text = _public_value(restaurant.get("rating"), "TourAPI 미제공")
+        review_text = _public_value(restaurant.get("review_count"), "TourAPI 미제공")
+        price_text = _public_value(restaurant.get("average_price"), "TourAPI 미제공")
         lines.extend(
             [
                 f"{index}. {restaurant['name']} ({restaurant.get('cuisine') or '음식점'})",
                 f"- 추천 이유: {restaurant.get('recommendation_reason', 'TourAPI 등록 음식점 정보 기준으로 추천했습니다.')}",
                 f"- 주소: {_public_value(restaurant.get('address'))}",
                 f"- 거리: {distance_reference} 기준 {distance_text}",
+                f"- 평점/리뷰/가격대: 평점 {rating_text}, 리뷰 {review_text}, 가격대 {price_text}",
                 f"- 전화: {_public_value(restaurant.get('phone'))}",
                 f"- 대표 메뉴: {', '.join(menus) if menus else 'TourAPI 상세 메뉴 정보 없음'}",
                 f"- 영업 정보: {_public_value(operation.get('open_time'))}, 휴무 {_public_value(operation.get('rest_date'))}",
@@ -720,12 +847,13 @@ async def run_llm_final_answer(
 
     system_prompt = (
         "너는 맛집 추천 ReAct Agent의 최종 답변 생성기다. 제공된 초안의 식당명, 주소, 거리, 전화번호, "
-        "메뉴, 영업정보, 추천 이유, 점수 근거, Reflection, 데이터 한계를 변경하거나 삭제하지 말고 "
+        "평점/리뷰/가격대, 메뉴, 영업정보, 추천 이유, 점수 근거, Reflection, 데이터 한계를 변경하거나 삭제하지 말고 "
         "한국어로 자연스럽게 정리한다. 각 식당에는 반드시 추천 이유와 점수 근거를 포함한다. "
+        "초안에 '평점/리뷰/가격대' 줄이 있으면 각 식당별로 반드시 그대로 보존한다. "
         "답변 마지막에는 반드시 'Reflection:'으로 시작하는 검토 문장을 포함한다. "
         "초안에 없는 '유명', '인기', '맛있다', '평이 좋다' 같은 평가 표현을 새로 추가하지 않는다. "
         "추천 이유와 점수 근거는 초안의 의미와 항목을 그대로 유지한다. "
-        "TourAPI가 제공하지 않는 평점/리뷰 수는 절대 만들지 않는다."
+        "TourAPI가 제공하지 않는 평점/리뷰 수/가격대는 절대 만들지 않는다."
     )
     user_prompt = json.dumps(
         {
@@ -737,8 +865,11 @@ async def run_llm_final_answer(
     )
 
     try:
-        final_answer = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=1200, temperature=0.2)
+        final_answer = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=1500, temperature=0.2)
         final_answer = final_answer.strip() or draft_answer
+        draft_required_count = draft_answer.count("- 평점/리뷰/가격대")
+        if draft_required_count and final_answer.count("- 평점/리뷰/가격대") < draft_required_count:
+            final_answer = draft_answer
         trace.write(
             agent_name="LLM Final Answer Agent",
             pattern="Final Answer",
@@ -906,6 +1037,11 @@ async def run_agent(
                     tool_name="search_tourapi_restaurants",
                     tool_input={
                         "area": public_area,
+                        "cuisine": parsed.cuisine,
+                        "max_price_level": parsed.max_price_level,
+                        "min_rating": parsed.min_rating,
+                        "min_review_count": parsed.min_review_count,
+                        "max_distance_m": parsed.max_distance_m,
                         "near_gaeksa": near_gaeksa,
                         "limit": 8,
                         "use_cache": True,

@@ -38,6 +38,18 @@ JEONJU_SEARCH_AREAS: dict[str, dict[str, Any]] = {
         "latitude": 35.8468,
         "radius": 1800,
     },
+    "전북대 구정문": {
+        "aliases": ["전북대 구정문", "전대 구정문", "구정문"],
+        "longitude": 127.1284,
+        "latitude": 35.8452,
+        "radius": 1200,
+    },
+    "웨리단길": {
+        "aliases": ["웨리단길", "전주웨리단길", "웨딩거리"],
+        "longitude": 127.1442,
+        "latitude": 35.8179,
+        "radius": 1200,
+    },
     "송천동": {
         "aliases": ["송천동", "송천"],
         "longitude": 127.1214,
@@ -98,6 +110,54 @@ JEONJU_SEARCH_AREAS: dict[str, dict[str, Any]] = {
         "latitude": 35.8358,
         "radius": 1800,
     },
+    "완산구": {
+        "aliases": ["완산구"],
+        "longitude": 127.1397,
+        "latitude": 35.8125,
+        "radius": 3500,
+    },
+    "덕진구": {
+        "aliases": ["덕진구"],
+        "longitude": 127.1340,
+        "latitude": 35.8466,
+        "radius": 3500,
+    },
+    "중앙동": {
+        "aliases": ["중앙동", "고사동"],
+        "longitude": 127.1442,
+        "latitude": 35.8190,
+        "radius": 1400,
+    },
+    "풍남동": {
+        "aliases": ["풍남동", "전동", "남부시장"],
+        "longitude": 127.1484,
+        "latitude": 35.8128,
+        "radius": 1500,
+    },
+    "금암동": {
+        "aliases": ["금암동", "금암"],
+        "longitude": 127.1330,
+        "latitude": 35.8378,
+        "radius": 1600,
+    },
+    "덕진동": {
+        "aliases": ["덕진동", "덕진공원"],
+        "longitude": 127.1218,
+        "latitude": 35.8465,
+        "radius": 1800,
+    },
+    "우아동": {
+        "aliases": ["우아동", "우아"],
+        "longitude": 127.1591,
+        "latitude": 35.8336,
+        "radius": 1700,
+    },
+    "만성동": {
+        "aliases": ["만성동", "만성"],
+        "longitude": 127.0788,
+        "latitude": 35.8402,
+        "radius": 1800,
+    },
 }
 GAEKSA_COORDINATES = {
     "longitude": JEONJU_SEARCH_AREAS["객사"]["longitude"],
@@ -120,12 +180,27 @@ CATEGORY_CUISINES = {
 
 CUISINE_KEYWORDS = {
     "한식": ["한식", "비빔", "국밥", "백반", "갈비", "전주", "콩나물", "한정식", "찌개", "칼국수"],
-    "일식": ["일식", "초밥", "스시", "돈까스", "돈카츠", "우동", "라멘", "나베"],
-    "중식": ["중식", "반점", "짜장", "짬뽕", "탕수육", "마라"],
-    "분식": ["분식", "떡볶이", "김밥", "튀김", "라볶이"],
-    "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집"],
-    "고기": ["고기", "갈비", "삼겹", "구이", "장어", "불고기"],
-    "양식": ["파스타", "피자", "스테이크", "브런치", "리조또", "양식"],
+    "일식": ["일식", "초밥", "스시", "돈까스", "돈카츠", "우동", "라멘", "나베", "소바", "이자카야", "오마카세"],
+    "중식": ["중식", "반점", "짜장", "자장", "짬뽕", "탕수육", "마라", "마라탕", "훠궈"],
+    "분식": ["분식", "떡볶이", "김밥", "튀김", "라볶이", "순대"],
+    "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집", "베이커리", "빵", "케이크"],
+    "고기": ["고기", "갈비", "삼겹", "구이", "장어", "불고기", "곱창", "막창", "족발", "보쌈", "치킨"],
+    "양식": ["파스타", "피자", "스테이크", "브런치", "리조또", "양식", "버거", "햄버거", "샐러드"],
+    "아시아식": ["쌀국수", "베트남", "태국", "타이", "인도", "커리", "카레", "아시아"],
+    "해산물": ["회", "횟집", "해산물", "생선", "조개", "초밥"],
+}
+
+FOOD_QUERY_STOPWORDS = {
+    "맛집",
+    "음식점",
+    "식당",
+    "추천",
+    "근처",
+    "주변",
+    "에서",
+    "으로",
+    "좋은",
+    "괜찮은",
 }
 
 
@@ -305,13 +380,91 @@ def _float_or_none(value: Any) -> float | None:
 
 def _resolve_search_area(area: str | None, near_gaeksa: bool = False) -> dict[str, Any] | None:
     if near_gaeksa:
-        return {"name": "객사", **JEONJU_SEARCH_AREAS["객사"]}
+        return {"name": "객사", "resolution_source": "local_jeonju_gazetteer", **JEONJU_SEARCH_AREAS["객사"]}
 
     text = area or ""
+    matched: tuple[int, str, dict[str, Any]] | None = None
     for name, config in JEONJU_SEARCH_AREAS.items():
-        if any(alias in text for alias in config["aliases"]):
-            return {"name": name, **config}
+        for alias in config["aliases"]:
+            if alias in text and (matched is None or len(alias) > matched[0]):
+                matched = (len(alias), name, config)
+    if matched is None:
+        return None
+    _, name, config = matched
+    return {"name": name, "resolution_source": "local_jeonju_gazetteer", **config}
+
+
+def _clean_jeonju_location_keyword(area: str | None) -> str | None:
+    text = re.sub(r"\s+", " ", area or "").strip()
+    if not text or "전주" not in text:
+        return None
+    text = re.sub(r"^전주시?\s*", "", text)
+    text = re.sub(r"(맛집|음식점|식당|추천|근처|주변|에서|으로|가까운|찾아줘|알려줘)", " ", text)
+    for terms in CUISINE_KEYWORDS.values():
+        for term in terms:
+            text = re.sub(re.escape(term), " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
+def _resolve_search_area_from_tourapi(area: str | None, use_cache: bool = True) -> dict[str, Any] | None:
+    keyword = _clean_jeonju_location_keyword(area)
+    if not keyword:
+        return None
+
+    settings = _load_settings()
+    keyword_candidates = [keyword]
+    if not keyword.startswith("전주"):
+        keyword_candidates.append(f"전주 {keyword}")
+
+    for candidate in keyword_candidates:
+        result = _tourapi_request(
+            "searchKeyword2",
+            {
+                "numOfRows": 10,
+                "pageNo": 1,
+                "arrange": "A",
+                "areaCode": settings["area_code"],
+                "sigunguCode": settings["sigungu_code"],
+                "keyword": candidate,
+            },
+            use_cache=use_cache,
+        )
+        if result["status"] != "ok":
+            continue
+        for item in _items_from_payload(result["payload"]):
+            longitude = _float_or_none(_first_text(item.get("mapx")))
+            latitude = _float_or_none(_first_text(item.get("mapy")))
+            address = _first_text(item.get("addr1")) or ""
+            if longitude is None or latitude is None or "전주" not in address:
+                continue
+            title = _first_text(item.get("title")) or keyword
+            return {
+                "name": keyword,
+                "aliases": [keyword],
+                "longitude": longitude,
+                "latitude": latitude,
+                "radius": 1800,
+                "resolution_source": "TourAPI searchKeyword2",
+                "resolved_from": {
+                    "title": title,
+                    "address": address,
+                    "content_id": _first_text(item.get("contentid")),
+                    "cache_key": result.get("cache_key"),
+                },
+            }
     return None
+
+
+def _resolve_search_area_for_query(
+    area: str | None,
+    near_gaeksa: bool = False,
+    use_cache: bool = True,
+) -> dict[str, Any] | None:
+    fixed_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
+    if fixed_area is not None:
+        return fixed_area
+    return _resolve_search_area_from_tourapi(area, use_cache=use_cache)
 
 
 def _distance_m(
@@ -424,7 +577,7 @@ def _standardize_restaurant(
         "source_confidence": 0.9,
         "modified_time": _first_text(raw.get("modifiedtime")),
         "recommendation_reason": "한국관광공사 TourAPI에 등록된 전주시 음식점입니다.",
-        "source_note": "TourAPI는 리뷰 수와 평점을 제공하지 않아 해당 항목은 추천 기준에 포함하지 않습니다.",
+        "source_note": "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에 포함하지 않습니다.",
     }
     return restaurant
 
@@ -442,6 +595,51 @@ def _text_blob(restaurant: dict[str, Any]) -> str:
         ]
         if value
     )
+
+
+def _food_query_terms(food_query: str | None) -> list[str]:
+    if not food_query:
+        return []
+    query = food_query.strip()
+    if not query:
+        return []
+
+    terms = [query]
+    for cuisine, keywords in CUISINE_KEYWORDS.items():
+        if query == cuisine or query in keywords or any(keyword in query for keyword in keywords):
+            terms.extend([cuisine, *keywords])
+    cleaned_terms: list[str] = []
+    for term in terms:
+        term = term.strip()
+        if term and term not in FOOD_QUERY_STOPWORDS and term not in cleaned_terms:
+            cleaned_terms.append(term)
+    return cleaned_terms
+
+
+def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> bool:
+    terms = _food_query_terms(food_query)
+    if not terms:
+        return True
+    cuisine = str(restaurant.get("cuisine") or "")
+    blob = _text_blob(restaurant)
+    return any(term == cuisine or term in blob for term in terms)
+
+
+def _merge_restaurants(restaurants: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for restaurant in restaurants:
+        key = restaurant.get("content_id") or restaurant.get("restaurant_id") or restaurant.get("name")
+        if key is None:
+            continue
+        existing = merged.get(str(key))
+        if existing is None:
+            merged[str(key)] = restaurant
+            continue
+        existing_completeness = sum(1 for value in existing.values() if value)
+        new_completeness = sum(1 for value in restaurant.values() if value)
+        if new_completeness > existing_completeness:
+            merged[str(key)] = restaurant
+    return list(merged.values())
 
 
 def _score_public_restaurant(
@@ -488,9 +686,12 @@ def _score_public_restaurant(
     reasons.append(f"상세정보 {completeness}개 확보")
 
     desired_cuisine = ranking_policy.get("cuisine")
-    if desired_cuisine and restaurant.get("cuisine") == desired_cuisine:
+    if desired_cuisine and _matches_food_query(restaurant, str(desired_cuisine)):
         score += 10
         reasons.append(f"{desired_cuisine} 조건 일치")
+    elif desired_cuisine:
+        score -= 6
+        reasons.append(f"{desired_cuisine} 조건 직접 매칭 없음")
 
     preferred_cuisines = ranking_policy.get("preferred_cuisines", []) or []
     if restaurant.get("cuisine") in preferred_cuisines:
@@ -512,6 +713,22 @@ def _score_public_restaurant(
         score += 5
         reasons.append(f"날씨 힌트 매칭: {', '.join(matched_hints[:3])}")
 
+    max_distance_m = ranking_policy.get("max_distance_m")
+    if isinstance(distance_m, int) and max_distance_m:
+        if distance_m <= int(max_distance_m):
+            score += 4
+            reasons.append(f"요청 거리 {int(max_distance_m)}m 이내")
+        else:
+            score -= 10
+            reasons.append(f"요청 거리 {int(max_distance_m)}m 초과")
+
+    if ranking_policy.get("min_rating") is not None and restaurant.get("rating") is None:
+        reasons.append("TourAPI 평점 미제공")
+    if ranking_policy.get("min_review_count") is not None and restaurant.get("review_count") is None:
+        reasons.append("TourAPI 리뷰 수 미제공")
+    if ranking_policy.get("max_price_level") is not None and restaurant.get("average_price") is None:
+        reasons.append("TourAPI 가격대 미제공")
+
     if not restaurant.get("address"):
         score -= 5
         reasons.append("주소 누락")
@@ -522,10 +739,55 @@ def _score_public_restaurant(
     return round(score, 2), reasons
 
 
+def _keyword_restaurants(
+    food_query: str | None,
+    reference_coordinates: dict[str, float] | None,
+    reference_name: str | None,
+    use_cache: bool,
+    rows: int,
+) -> list[dict[str, Any]]:
+    terms = _food_query_terms(food_query)
+    if not terms:
+        return []
+
+    settings = _load_settings()
+    restaurants: list[dict[str, Any]] = []
+    for term in terms[:4]:
+        result = _tourapi_request(
+            "searchKeyword2",
+            {
+                "numOfRows": rows,
+                "pageNo": 1,
+                "arrange": "A",
+                "contentTypeId": CONTENT_TYPE_RESTAURANT,
+                "areaCode": settings["area_code"],
+                "sigunguCode": settings["sigungu_code"],
+                "keyword": term,
+            },
+            use_cache=use_cache,
+        )
+        if result["status"] != "ok":
+            continue
+        for item in _items_from_payload(result["payload"]):
+            restaurants.append(
+                _standardize_restaurant(
+                    item,
+                    reference_coordinates=reference_coordinates,
+                    reference_name=reference_name,
+                )
+            )
+    return _merge_restaurants(restaurants)
+
+
 @mcp.tool()
 def search_tourapi_restaurants(
     area: str = "전주",
     keyword: str | None = None,
+    cuisine: str | None = None,
+    max_price_level: int | None = None,
+    min_rating: float | None = None,
+    min_review_count: int | None = None,
+    max_distance_m: int | None = None,
     near_gaeksa: bool = False,
     limit: int = 20,
     use_cache: bool = True,
@@ -539,11 +801,12 @@ def search_tourapi_restaurants(
             "candidates": [],
         }
 
-    settings = _load_settings()
     rows = min(max(int(limit) * 3, 20), 100)
-    search_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
+    settings = _load_settings()
+    search_area = _resolve_search_area_for_query(area, near_gaeksa=near_gaeksa, use_cache=use_cache)
     if search_area is not None:
         path = "locationBasedList2"
+        effective_radius = int(max_distance_m or search_area["radius"])
         params = {
             "numOfRows": rows,
             "pageNo": 1,
@@ -551,7 +814,7 @@ def search_tourapi_restaurants(
             "contentTypeId": CONTENT_TYPE_RESTAURANT,
             "mapX": search_area["longitude"],
             "mapY": search_area["latitude"],
-            "radius": search_area["radius"],
+            "radius": min(max(effective_radius, 300), 20000),
         }
     else:
         path = "areaBasedList2"
@@ -576,16 +839,43 @@ def search_tourapi_restaurants(
     reference_coordinates = (
         {"longitude": search_area["longitude"], "latitude": search_area["latitude"]} if search_area is not None else None
     )
+    reference_name = search_area["name"] if search_area is not None else None
     restaurants = [
         _standardize_restaurant(
             item,
             reference_coordinates=reference_coordinates,
-            reference_name=search_area["name"] if search_area is not None else None,
+            reference_name=reference_name,
         )
         for item in _items_from_payload(payload)
     ]
-    if keyword:
-        restaurants = [restaurant for restaurant in restaurants if keyword in _text_blob(restaurant)]
+
+    food_query = cuisine or keyword
+    restaurants = _merge_restaurants(
+        restaurants
+        + _keyword_restaurants(
+            food_query=food_query,
+            reference_coordinates=reference_coordinates,
+            reference_name=reference_name,
+            use_cache=use_cache,
+            rows=rows,
+        )
+    )
+
+    if max_distance_m and reference_coordinates is not None:
+        restaurants = [
+            restaurant
+            for restaurant in restaurants
+            if restaurant.get("distance_m") is None or int(restaurant["distance_m"]) <= int(max_distance_m)
+        ]
+
+    matched_food = [restaurant for restaurant in restaurants if _matches_food_query(restaurant, food_query)]
+    food_filter_relaxed = False
+    if food_query:
+        if matched_food:
+            restaurants = matched_food
+        else:
+            food_filter_relaxed = True
+
     restaurants.sort(
         key=lambda restaurant: (
             restaurant.get("distance_m") is None,
@@ -594,6 +884,14 @@ def search_tourapi_restaurants(
         )
     )
 
+    unavailable_filters = []
+    if min_rating is not None:
+        unavailable_filters.append("rating")
+    if min_review_count is not None:
+        unavailable_filters.append("review_count")
+    if max_price_level is not None:
+        unavailable_filters.append("price_level")
+
     return {
         "status": "ok",
         "source": result["source"],
@@ -601,13 +899,36 @@ def search_tourapi_restaurants(
         "query": {
             "area": area,
             "keyword": keyword,
+            "cuisine": cuisine,
+            "max_price_level": max_price_level,
+            "min_rating": min_rating,
+            "min_review_count": min_review_count,
+            "max_distance_m": max_distance_m,
             "near_gaeksa": near_gaeksa,
             "target_area": search_area["name"] if search_area is not None else None,
+            "location_resolution": (
+                {
+                    "status": "resolved",
+                    "source": search_area.get("resolution_source"),
+                    "longitude": search_area["longitude"],
+                    "latitude": search_area["latitude"],
+                    "resolved_from": search_area.get("resolved_from"),
+                }
+                if search_area is not None
+                else {"status": "unresolved_fallback_to_jeonju_area_list", "source": None}
+            ),
             "limit": limit,
             "contentTypeId": CONTENT_TYPE_RESTAURANT,
             "search_method": path,
-            "radius": search_area["radius"] if search_area is not None else None,
+            "radius": params.get("radius"),
+            "food_filter_relaxed": food_filter_relaxed,
         },
+        "unavailable_filters": unavailable_filters,
+        "data_limitations": (
+            "TourAPI KorService2는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 조건은 거리/상세정보/음식종류 점수와 한계 고지로 처리합니다."
+            if unavailable_filters
+            else None
+        ),
         "total_count": _body_total_count(payload),
         "count": len(restaurants[: max(1, limit)]),
         "candidates": restaurants[: max(1, limit)],

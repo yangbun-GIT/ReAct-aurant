@@ -23,7 +23,9 @@
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
-- TourAPI는 평점과 리뷰 수를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 상세정보 충실도, 요청 조건 일치도로 추천하고 임의 평점/리뷰를 생성하지 않습니다.
+- TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 거리, 상세정보 충실도, 음식 종류 일치도로 추천하고 임의 평점/리뷰/가격을 생성하지 않습니다.
+- 전주 세부 위치는 객사, 웨리단길, 한옥마을, 전북대 구정문, 신시가지, 효자동, 송천동, 완산구, 덕진구 등 로컬 전주 위치 사전으로 먼저 해석하고, 사전에 없는 전주 지명은 TourAPI `searchKeyword2`로 좌표를 찾아 반경 검색을 시도합니다.
+- 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
 
 ## Agent 구조 점검 기준
 
@@ -163,7 +165,7 @@ LLM 실행 옵션:
 
 `public_data_server.py`
 
-- `search_tourapi_restaurants(area, keyword, near_gaeksa, limit, use_cache)`: 한국관광공사 TourAPI에서 전주시 전체 또는 세부 지역 반경 음식점 후보를 조회합니다.
+- `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.
