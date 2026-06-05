@@ -5,6 +5,11 @@ from pathlib import Path
 
 TRACE_PATH = Path("sample_outputs/jeonju_trace_sample.jsonl")
 REQUIRED_SCENARIO_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
+MCP_SERVER_FILES = [
+    Path("env_context_server.py"),
+    Path("gourmet_db_server.py"),
+    Path("public_data_server.py"),
+]
 
 
 def _load_trace_events() -> list[dict]:
@@ -22,6 +27,43 @@ class AgenticPatternTraceTests(unittest.TestCase):
         self.assertIn("Reflection Pattern", patterns)
         self.assertIn("Memory Pattern", patterns)
         self.assertIn("Final Answer", patterns)
+
+    def test_project_uses_real_mcp_sdk_and_multiple_stdio_servers(self) -> None:
+        client_source = Path("react_client.py").read_text(encoding="utf-8")
+
+        self.assertIn("from mcp import ClientSession, StdioServerParameters", client_source)
+        self.assertIn("from mcp.client.stdio import stdio_client", client_source)
+        self.assertGreaterEqual(client_source.count("StdioServerParameters("), 2)
+        self.assertGreaterEqual(client_source.count("ClientSession("), 2)
+
+        for server_file in MCP_SERVER_FILES:
+            with self.subTest(server_file=str(server_file)):
+                server_source = server_file.read_text(encoding="utf-8")
+                self.assertIn("from mcp.server.fastmcp import FastMCP", server_source)
+                self.assertIn("FastMCP(", server_source)
+                self.assertIn('@mcp.tool()', server_source)
+                self.assertIn('mcp.run("stdio")', server_source)
+
+    def test_sample_trace_lists_and_calls_multiple_mcp_servers(self) -> None:
+        events = _load_trace_events()
+        listed_servers = {
+            event.get("mcp_server")
+            for event in events
+            if event.get("jsonrpc_method") == "tools/list" and event.get("mcp_server")
+        }
+        called_servers = {
+            event.get("mcp_server")
+            for event in events
+            if event.get("jsonrpc_method") == "tools/call" and event.get("mcp_server")
+        }
+
+        self.assertGreaterEqual(len(listed_servers), 2)
+        self.assertGreaterEqual(len(called_servers), 2)
+        self.assertIn("env_context_server.py", listed_servers)
+        self.assertIn("gourmet_db_server.py", listed_servers)
+        self.assertIn("public_data_server.py", listed_servers)
+        self.assertIn("env_context_server.py", called_servers)
+        self.assertIn("public_data_server.py", called_servers)
 
     def test_react_loop_records_action_and_observation_before_final_answer(self) -> None:
         events = _load_trace_events()
