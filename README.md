@@ -8,7 +8,7 @@
 
 | 제출 항목 | 확인 위치 | 비고 |
 | --- | --- | --- |
-| 소스 코드 | `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py`, `jeonju_gazetteer.py` | ReAct 실행 루프, MCP 도구 서버, 전주 지명 사전 구현 |
+| 소스 코드 | `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py`, `jeonju_gazetteer.py`, `web_dashboard.py` | ReAct 실행 루프, MCP 도구 서버, 전주 지명 사전, 로컬 관리자 대시보드 구현 |
 | 실행 환경 | `requirements.txt` | Python 패키지 고정 |
 | README | `README.md` | 설치, 실행, 패턴, API 사용 방법 설명 |
 | 실행 로그 | `sample_outputs/jeonju_run_log.md` | 대표 프롬프트 실행 결과와 도구 호출 요약 |
@@ -48,6 +48,7 @@ gourmet_db_server.py                     # 로컬 맛집 검색, 상세 조회, 
 public_data_server.py                    # 한국관광공사 TourAPI 공공데이터 MCP 서버
 jeonju_gazetteer.py                      # 전주 행정동/법정동/생활권 별칭 사전
 react_client.py                          # ReAct Agent 실행 클라이언트
+web_dashboard.py                         # 로컬 관리자 웹 대시보드
 requirements.txt                         # Python 실행 환경
 .env.example                             # 환경 변수 예시, 실제 key 없음
 sample_outputs/jeonju_run_log.md         # 대표 실행 로그
@@ -102,6 +103,15 @@ LLM Agent 환경 변수:
 
 - `KAKAO_REST_API_KEY`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `GOOGLE_PLACES_API_KEY`: 비용 및 키 관리 부담 때문에 기본 구현에서는 사용하지 않습니다.
 
+로컬 관리자 웹 대시보드 환경 변수:
+
+- `WEB_HOST`: 기본값은 `127.0.0.1`입니다. 키와 실행 로그 보호를 위해 로컬 바인딩을 권장합니다.
+- `WEB_PORT`: 기본값은 `0`입니다. OS가 사용 가능한 포트를 자동 할당하고 실행 콘솔에 실제 URL을 출력합니다. 고정 포트를 원하면 예: `8765`처럼 지정합니다.
+- `WEB_ADMIN_USERNAME`: 기본 관리자 계정명입니다. 기본값은 `admin`입니다.
+- `WEB_ADMIN_PASSWORD`: `WEB_AUTO_LOGIN=false`로 둘 때만 로컬 `.env`에 입력합니다. `.env.example`이나 GitHub에는 실제 비밀번호를 넣지 않습니다.
+- `WEB_AUTO_LOGIN`: 기본값은 `true`입니다. `127.0.0.1` 접속은 자동 관리자 로그인으로 처리합니다.
+- `WEB_AGENT_TIMEOUT_SECONDS`: 웹에서 Agent 1회 실행을 기다리는 최대 시간입니다.
+
 ## 실행
 
 대표 과제 요청:
@@ -144,6 +154,31 @@ LLM 실행 옵션:
 ```powershell
 .\.venv\Scripts\python react_client.py "전주 객사 근처 맛집 추천해줘" --no-llm
 ```
+
+## 로컬 관리자 웹 대시보드
+
+입력과 출력, ReAct Agent Trace, 실행 로그를 한 화면에서 확인하려면 아래 명령으로 로컬 웹 서버를 실행합니다.
+
+```powershell
+.\.venv\Scripts\python web_dashboard.py
+```
+
+명령 실행 후 콘솔에 출력되는 `ReAct-aurant Admin: http://127.0.0.1:<port>/app` 주소를 브라우저에서 엽니다. 기본 설정은 로컬 접속 자동 로그인입니다. 회원가입은 없고 관리자 계정 하나만 사용합니다.
+
+웹 대시보드에서 확인할 수 있는 항목:
+
+- 사용자 질문 입력 및 실행
+- 최종 추천 결과
+- Agent 판단 과정
+- 호출한 MCP 도구 이름
+- 도구 입력값
+- 도구 실행 결과 Observation
+- ReAct Trace 자연어 흐름
+- ReAct Trace 코드 흐름
+- 원본 Trace JSONL
+- 질문별 저장된 실행 로그
+
+웹 실행 결과는 `logs/web_runs/<run_id>/`에 저장됩니다. 이 경로는 `.gitignore`의 `logs/` 규칙에 의해 GitHub와 zip 제출물에서 제외됩니다. 대시보드는 키 값을 화면에 표시하지 않으며, Agent 실행 명령과 Trace만 저장합니다.
 
 ## MCP 서버와 도구
 
