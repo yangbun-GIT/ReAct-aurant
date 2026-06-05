@@ -742,13 +742,17 @@ def render_dashboard() -> str:
       document.getElementById('metricCalls').textContent = countToolCalls(run);
       document.getElementById('metricSource').textContent = run.data_source || '-';
       document.getElementById('finalAnswer').textContent = run.final_answer || '최종 추천 결과가 없습니다.';
-      document.getElementById('runLog').textContent = [
+      const stderrText = (run.stderr || '').trim();
+      const logSections = [
         '[stdout]',
-        run.stdout || '',
-        '',
-        '[stderr]',
-        run.stderr || ''
-      ].join('\\n');
+        run.stdout || ''
+      ];
+      if (stderrText) {{
+        logSections.push('', '[stderr]', run.stderr);
+      }} else {{
+        logSections.push('', 'stderr 출력 없음: 실행 중 표준 오류로 기록된 내용이 없습니다.');
+      }}
+      document.getElementById('runLog').textContent = logSections.join('\\n');
       document.getElementById('jsonTrace').textContent = (run.trace_events || []).map(event => JSON.stringify(event, null, 2)).join('\\n');
 
       const naturalTrace = document.getElementById('naturalTrace');

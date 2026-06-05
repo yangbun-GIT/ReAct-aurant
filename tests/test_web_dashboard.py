@@ -17,6 +17,7 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("Trace 코드 흐름", html)
         self.assertIn("실행 로그", html)
         self.assertIn("Trace JSONL", html)
+        self.assertIn("stderr 출력 없음", html)
 
     def test_trace_views_expose_natural_language_and_code_flow(self) -> None:
         events = web_dashboard.load_trace_events(Path("sample_outputs/jeonju_trace_sample.jsonl"))
