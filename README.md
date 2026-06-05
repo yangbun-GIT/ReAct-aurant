@@ -181,6 +181,21 @@ LLM 실행 옵션:
 | Memory Pattern | 사용자 선호 프로필을 조회하고 현재 요청을 단기 메모리에 저장합니다. |
 | Multi-Agent 구조 | Coordinator Agent, LLM Planner, Context Specialist Agent, Public Data Agent, Culinary Finder Agent, LLM Reflection Reviewer, LLM Final Answer Agent로 역할을 분리했습니다. |
 
+### 2단계 패턴 적용 점검
+
+대표 trace `sample_outputs/jeonju_trace_sample.jsonl` 기준으로 다음 순서가 확인됩니다.
+
+| 점검 항목 | Trace 근거 |
+| --- | --- |
+| Plan-and-Solve | step 1에서 전체 문제를 분해하고, step 5에서 요청 조건을 구조화하며, step 6에서 GPT Planner가 도구 호출 계획과 Reflection 기준을 생성합니다. |
+| Tool Use | step 2~4에서 MCP `tools/list`로 사용 가능한 도구를 발견하고, 이후 `tools/call`로 날씨, 메모리, TourAPI 검색, 상세 조회, 랭킹 도구를 호출합니다. |
+| ReAct 필수 패턴 | step 13 `Thought: 실제 공공데이터 기반 후보 확보 -> Action: search_tourapi_restaurants`, step 14 Observation, step 25 `rank_tourapi_restaurants`, step 26 Observation, step 30 Final Answer로 이어집니다. |
+| Reflection | step 27에서 GPT Reflection Reviewer가 후보와 Observation을 검토하고, step 28에서 조건 충족 여부와 데이터 한계를 기록합니다. |
+| Memory | step 9에서 사용자 선호 프로필을 조회하고, step 11에서 현재 요청을 단기 메모리에 저장합니다. |
+| Multi-Agent | Coordinator, LLM Planner, Context Specialist, Public Data Agent, Reflection Reviewer, LLM Final Answer Agent가 역할을 나누어 실행됩니다. |
+
+패턴 적용 여부는 `tests/test_agentic_patterns.py`에서 자동으로 검증합니다. 이 테스트는 ReAct의 Action/Observation 순서, Reflection 전후 관계, Memory 도구 호출, 최종 답변의 데이터 한계 보존 여부를 확인합니다.
+
 ## ReAct 도구 호출 Trace
 
 실행 시 `--trace`로 JSONL trace를 저장합니다. trace에는 다음 정보가 포함됩니다.
