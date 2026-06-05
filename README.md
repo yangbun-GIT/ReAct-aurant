@@ -25,6 +25,19 @@
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
 - TourAPI는 평점과 리뷰 수를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 상세정보 충실도, 요청 조건 일치도로 추천하고 임의 평점/리뷰를 생성하지 않습니다.
 
+## Agent 구조 점검 기준
+
+이 프로젝트는 LLM에게 바로 “맛집 추천해줘”를 묻는 단일 프롬프트 구조가 아닙니다. 실행 흐름은 아래 순서로 분리됩니다.
+
+1. `Coordinator Agent`가 사용자 요청을 지역, 목적, 가격, 리뷰, 평점 조건으로 1차 구조화합니다.
+2. `LLM Planner`가 구조화된 조건과 사용 가능한 MCP 도구 목록을 보고 도구 호출 계획과 검토 기준을 생성합니다.
+3. `Context Specialist Agent`가 날씨, 사용자 선호, 단기 메모리 MCP 도구를 호출하고 Observation을 trace에 기록합니다.
+4. `Public Data Agent`가 TourAPI 검색, 상세 조회, 랭킹 MCP 도구를 `Thought -> Action -> Observation` 순서로 실행합니다.
+5. `LLM Reflection Reviewer`가 도구 Observation과 후보 목록을 검토해 데이터 한계와 조건 충족 여부를 점검합니다.
+6. `LLM Final Answer Agent`가 Observation, 랭킹 결과, Reflection을 근거로 최종 추천 문장을 생성합니다.
+
+따라서 최종 답변은 GPT가 직접 상상한 결과가 아니라 MCP 도구 호출 결과와 Reflection을 거친 결과입니다. 단, 안정성을 위해 실제 도구 실행은 허용된 MCP 도구 목록 안에서 코드가 통제하며, GPT Planner는 실행 계획과 검토 기준을 생성하는 역할을 맡습니다.
+
 ## 프로젝트 구조
 
 ```text

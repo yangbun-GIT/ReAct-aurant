@@ -3,7 +3,7 @@
 실행 명령:
 
 ```powershell
-.\.venv\Scripts\python react_client.py "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘." --trace logs\trace_jeonju.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘." --use-llm --trace logs\trace_jeonju.jsonl
 ```
 
 ## Agent 판단 과정 요약

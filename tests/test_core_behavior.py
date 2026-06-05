@@ -2,10 +2,15 @@ import unittest
 from argparse import Namespace
 
 from public_data_server import _resolve_search_area, _score_public_restaurant, _standardize_restaurant, search_tourapi_restaurants
-from react_client import ParsedRequest, parse_user_request, reflect_public_recommendations, resolve_llm_enabled, resolve_query
+from react_client import ParsedRequest, parse_llm_json, parse_user_request, reflect_public_recommendations, resolve_llm_enabled, resolve_query
 
 
 class RequestParsingTests(unittest.TestCase):
+    def test_parse_llm_json_accepts_fenced_json(self) -> None:
+        parsed = parse_llm_json('```json\n{"steps": ["search", "rank"]}\n```')
+
+        self.assertEqual(parsed["steps"], ["search", "rank"])
+
     def test_parse_jeonju_gaeksa_request(self) -> None:
         parsed = parse_user_request("전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘")
 
