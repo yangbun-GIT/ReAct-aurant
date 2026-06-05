@@ -2,6 +2,7 @@ import unittest
 from argparse import Namespace
 from unittest.mock import patch
 
+from env_context_server import _resolve_location as _resolve_weather_location
 from gourmet_db_server import rank_restaurants, search_restaurants
 from jeonju_gazetteer import JEONJU_SEARCH_AREAS
 from public_data_server import (
@@ -14,6 +15,8 @@ from public_data_server import (
 )
 from react_client import (
     ParsedRequest,
+    build_public_final_answer,
+    build_ranking_policy,
     evaluate_input_guard,
     parse_llm_json,
     parse_user_request,
@@ -125,6 +128,52 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.location, "전주 혁신동")
         self.assertIsNone(parsed.cuisine)
         self.assertIn("점심", parsed.purpose)
+
+    def test_parse_area_alias_does_not_become_cuisine_with_requested_weather(self) -> None:
+        parsed = parse_user_request("웨리단길 맛집 추천 비오는 날씨")
+        guard = evaluate_input_guard("웨리단길 맛집 추천 비오는 날씨", parsed)
+
+        self.assertEqual(parsed.location, "전주 웨리단길")
+        self.assertIsNone(parsed.cuisine)
+        self.assertEqual(parsed.requested_weather, "비")
+        self.assertEqual(parsed.purpose, "일반 식사")
+        self.assertIn("지역=전주 웨리단길", parsed.extracted_conditions)
+        self.assertIn("날씨조건=비", parsed.extracted_conditions)
+        self.assertIn("목적=일반 식사", parsed.extracted_conditions)
+        self.assertFalse(any(issue["severity"] == "error" for issue in guard["issues"]))
+
+    def test_parse_weather_condition_across_jeonju_aliases(self) -> None:
+        cases = {
+            "객사 맛집 비 오는 날": "전주 객사",
+            "한옥마을 비 오는 날 디저트 추천": "전주 한옥마을",
+            "신시가지 비오는날 마라탕 추천": "전주 효자동",
+        }
+
+        for query, expected_location in cases.items():
+            with self.subTest(query=query):
+                parsed = parse_user_request(query)
+
+                self.assertEqual(parsed.location, expected_location)
+                self.assertEqual(parsed.requested_weather, "비")
+
+    def test_requested_weather_overrides_actual_weather_for_ranking_policy(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 웨리단길",
+            requested_weather="비",
+            extracted_conditions=["지역=전주 웨리단길", "날씨조건=비"],
+        )
+
+        policy = build_ranking_policy(
+            parsed,
+            {"weather": "맑음", "food_hints": ["양식"]},
+            {"preferred_cuisines": ["한식"], "preferred_price_level": 2},
+        )
+
+        self.assertEqual(policy["weather"], "비")
+        self.assertEqual(policy["actual_weather"], "맑음")
+        self.assertEqual(policy["requested_weather"], "비")
+        self.assertIn("실내 좌석", policy["weather_hints"])
+        self.assertIn("양식", policy["weather_hints"])
 
     def test_resolve_query_accepts_positional_natural_language(self) -> None:
         args = Namespace(query=None, natural_query=["전주", "효자동", "한식", "추천"])
@@ -292,12 +341,20 @@ class PublicDataServerTests(unittest.TestCase):
                 "cuisine": "한식",
                 "preferred_cuisines": ["한식"],
                 "weather_hints": ["한식"],
+                "requested_weather": "비",
             },
         )
 
         self.assertGreater(score, 40)
         self.assertIn("전주 주소 일치", reasons)
         self.assertIn("한식 조건 일치", reasons)
+        self.assertIn("비 오는 날 이동 부담이 낮은 가까운 거리", reasons)
+
+    def test_weather_location_resolves_jeonju_detail_aliases(self) -> None:
+        location = _resolve_weather_location("전주 웨리단길")
+
+        self.assertEqual(location["label"], "전주 웨리단길")
+        self.assertIn("latitude", location)
 
     def test_public_search_rejects_non_jeonju_without_network(self) -> None:
         result = search_tourapi_restaurants(area="서울 홍대", use_cache=False)
@@ -394,6 +451,7 @@ class LocalRestaurantToolTests(unittest.TestCase):
                 "purpose": "친구와 저녁",
                 "max_price_level": 2,
                 "weather_hints": ["비"],
+                "requested_weather": "비",
                 "preferred_cuisines": ["한식"],
             },
         )
@@ -406,6 +464,7 @@ class LocalRestaurantToolTests(unittest.TestCase):
         self.assertIn("매우 가까움", reasons)
         self.assertIn("가격 조건 적합", reasons)
         self.assertIn("방문 목적 적합", reasons)
+        self.assertIn("비 오는 날 이동 부담 낮음", reasons)
         self.assertIn("날씨/선호 힌트 적합", reasons)
         self.assertIn("사용자 선호 음식", reasons)
 
@@ -428,6 +487,25 @@ class PublicReflectionTests(unittest.TestCase):
 
         self.assertEqual([item["restaurant_id"] for item in recommendations], ["tourapi:1", "tourapi:3"])
         self.assertIn("TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아", reflection)
+
+    def test_public_final_answer_shows_requested_weather_before_actual_weather(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 웨리단길",
+            requested_weather="비",
+            extracted_conditions=["지역=전주 웨리단길", "날씨조건=비"],
+        )
+
+        answer = build_public_final_answer(
+            "웨리단길 맛집 추천 비오는 날씨",
+            parsed,
+            {"location": "전주 웨리단길", "weather": "맑음", "temperature_c": 12.9},
+            {"notes": ["걷기 부담 없는 거리"]},
+            [],
+            "검토 완료",
+        )
+
+        self.assertIn("사용자 요청 날씨 조건=비를 우선 반영", answer)
+        self.assertIn("실제 날씨 조회: 전주 웨리단길 기준 맑음, 12.9도", answer)
 
 
 if __name__ == "__main__":

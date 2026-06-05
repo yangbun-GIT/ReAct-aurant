@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from jeonju_gazetteer import resolve_jeonju_search_area
+
 
 mcp = FastMCP("환경 컨텍스트 서버")
 
@@ -36,6 +38,15 @@ PROFILE_MEMORY: dict[str, list[str]] = {
 
 def _resolve_location(location: str) -> dict[str, float | str]:
     normalized = (location or "").strip()
+    if normalized in LOCATION_COORDINATES:
+        return LOCATION_COORDINATES[normalized]
+    search_area = resolve_jeonju_search_area(normalized)
+    if search_area is not None:
+        return {
+            "latitude": search_area["latitude"],
+            "longitude": search_area["longitude"],
+            "label": f"전주 {search_area['name']}",
+        }
     for key, value in LOCATION_COORDINATES.items():
         if key in normalized or normalized in key:
             return value

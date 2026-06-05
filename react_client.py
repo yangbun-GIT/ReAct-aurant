@@ -137,12 +137,27 @@ UNRELATED_HINT_TERMS = ["파이썬", "코드", "주식", "번역", "수학", "�
 BLOCKED_SAFETY_TERMS = ["성적인", "음란", "성매매", "19금", "자해", "마약", "불법", "해킹", "칼부림"]
 CONTEXTUAL_SAFETY_TERMS = ["폭력", "폭행", "살인"]
 SAFETY_TERMS = BLOCKED_SAFETY_TERMS + CONTEXTUAL_SAFETY_TERMS
+WEATHER_CONDITION_KEYWORDS = {
+    "비": ["비오는", "비오는날", "비오는날씨", "비올때", "비올 때", "비가오는", "비가 오는", "비 오는", "우천", "장마", "빗날"],
+    "눈": ["눈오는", "눈오는날", "눈올때", "눈 올 때", "눈 오는", "폭설"],
+    "추움": ["추운", "춥", "한파", "쌀쌀"],
+    "더움": ["더운", "덥", "폭염", "무더운"],
+    "맑음": ["맑은", "화창", "날씨 좋은"],
+}
+REQUESTED_WEATHER_HINTS = {
+    "비": ["비", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "칼국수", "한식", "이동 거리 짧은 곳"],
+    "눈": ["눈", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "전골", "한식", "이동 거리 짧은 곳"],
+    "추움": ["따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "한식", "실내 좌석"],
+    "더움": ["냉면", "샐러드", "가벼운 식사", "카페", "실내 좌석"],
+    "맑음": ["도보 이동", "분위기", "일식", "양식", "카페"],
+}
 
 
 class ParsedRequest(BaseModel):
     location: str = DEFAULT_LOCATION
     cuisine: str | None = None
-    purpose: str = "친구와 저녁"
+    requested_weather: str | None = None
+    purpose: str = "일반 식사"
     max_price_level: int = 2
     min_rating: float = 4.2
     min_review_count: int = 100
@@ -364,6 +379,20 @@ def _all_jeonju_alias_terms() -> list[str]:
     return jeonju_alias_terms()
 
 
+def _non_cuisine_terms() -> set[str]:
+    return {
+        "전주",
+        "근처",
+        "주변",
+        "좋은",
+        "괜찮은",
+        "맛집",
+        "음식점",
+        "식당",
+        "날씨",
+    } | NON_CUISINE_TERMS | set(_all_jeonju_alias_terms())
+
+
 def detect_cuisine(query: str) -> str | None:
     for term in FOOD_QUERY_TERMS:
         if term in query:
@@ -371,8 +400,16 @@ def detect_cuisine(query: str) -> str | None:
     match = re.search(r"([가-힣A-Za-z]+)\s*(?:맛집|음식점|식당|전문점)", query)
     if match:
         candidate = match.group(1).strip()
-        if candidate and candidate not in {"전주", "근처", "주변", "좋은", "괜찮은"} | NON_CUISINE_TERMS:
+        if candidate and candidate not in _non_cuisine_terms():
             return candidate
+    return None
+
+
+def detect_requested_weather(query: str) -> str | None:
+    compact = re.sub(r"\s+", "", query)
+    for weather, keywords in WEATHER_CONDITION_KEYWORDS.items():
+        if any(keyword in query or keyword.replace(" ", "") in compact for keyword in keywords):
+            return weather
     return None
 
 
@@ -562,6 +599,7 @@ def parse_user_request(query: str) -> ParsedRequest:
     fallback_location: str | None = None
     fallback_reason: str | None = None
     cuisine = detect_cuisine(query)
+    requested_weather = detect_requested_weather(query)
     detected_location = detect_jeonju_location(query, cuisine)
     unsupported_location = detect_unsupported_location(query)
 
@@ -593,6 +631,9 @@ def parse_user_request(query: str) -> ParsedRequest:
     elif not _contains_any(query, FOOD_QUERY_TERMS):
         missing_conditions.append("음식 종류")
 
+    if requested_weather:
+        conditions.append(f"날씨조건={requested_weather}")
+
     purpose_parts: list[str] = []
     if "친구" in query:
         purpose_parts.append("친구")
@@ -606,7 +647,7 @@ def parse_user_request(query: str) -> ParsedRequest:
         purpose_parts.append("데이트")
     if "혼밥" in query:
         purpose_parts.append("혼밥")
-    purpose = "와 ".join(purpose_parts) if purpose_parts else "친구와 저녁"
+    purpose = "와 ".join(purpose_parts) if purpose_parts else "일반 식사"
     if not purpose_parts:
         missing_conditions.append("방문 목적")
     conditions.append(f"목적={purpose}")
@@ -631,6 +672,7 @@ def parse_user_request(query: str) -> ParsedRequest:
     return ParsedRequest(
         location=location,
         cuisine=cuisine,
+        requested_weather=requested_weather,
         purpose=purpose,
         max_price_level=max_price_level,
         min_rating=min_rating,
@@ -663,6 +705,11 @@ def build_ranking_policy(
     weather: dict[str, Any],
     profile: dict[str, Any],
 ) -> dict[str, Any]:
+    weather_hints = list(weather.get("food_hints", []) or [])
+    if parsed.requested_weather:
+        requested_hints = REQUESTED_WEATHER_HINTS.get(parsed.requested_weather, [])
+        weather_hints = list(dict.fromkeys([*requested_hints, *weather_hints]))
+
     return {
         "purpose": parsed.purpose,
         "cuisine": parsed.cuisine,
@@ -670,8 +717,10 @@ def build_ranking_policy(
         "min_rating": parsed.min_rating,
         "min_review_count": parsed.min_review_count,
         "max_distance_m": parsed.max_distance_m,
-        "weather": weather.get("weather"),
-        "weather_hints": weather.get("food_hints", []),
+        "weather": parsed.requested_weather or weather.get("weather"),
+        "actual_weather": weather.get("weather"),
+        "requested_weather": parsed.requested_weather,
+        "weather_hints": weather_hints,
         "preferred_cuisines": profile.get("preferred_cuisines", []),
         "preferred_price_level": profile.get("preferred_price_level", parsed.max_price_level),
     }
@@ -709,7 +758,7 @@ def reflect_recommendations(
         else:
             warnings.append("조건을 완화해도 추천 가능한 후보가 없습니다.")
 
-    reflection = "조건 검토 완료: 가격, 리뷰 수, 평점, 거리, 친구와 저녁 목적을 확인했습니다."
+    reflection = f"조건 검토 완료: 가격, 리뷰 수, 평점, 거리, {parsed.purpose} 목적을 확인했습니다."
     if warnings:
         reflection += " " + " ".join(warnings)
     return accepted[: parsed.limit], reflection
@@ -732,6 +781,16 @@ def _exception_feedback_lines(parsed: ParsedRequest) -> list[str]:
     return lines
 
 
+def _weather_line(parsed: ParsedRequest, weather: dict[str, Any]) -> str:
+    actual = (
+        f"{weather.get('location', parsed.location)} 기준 "
+        f"{weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도"
+    )
+    if parsed.requested_weather:
+        return f"날씨 반영: 사용자 요청 날씨 조건={parsed.requested_weather}를 우선 반영했습니다. 실제 날씨 조회: {actual}"
+    return f"날씨 반영: {actual}"
+
+
 def build_final_answer(
     query: str,
     parsed: ParsedRequest,
@@ -746,7 +805,7 @@ def build_final_answer(
         "",
         f"요청: {query}",
         f"분석 조건: {', '.join(parsed.extracted_conditions)}",
-        f"날씨 반영: {weather.get('location', parsed.location)} 기준 {weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도",
+        _weather_line(parsed, weather),
         f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
     ]
     if data_source_note:
@@ -861,7 +920,7 @@ def build_public_final_answer(
         f"분석 조건: {', '.join(parsed.extracted_conditions)}",
         "데이터 출처: 한국관광공사 TourAPI KorService2",
         "데이터 한계: TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다.",
-        f"날씨 반영: {weather.get('location', parsed.location)} 기준 {weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도",
+        _weather_line(parsed, weather),
         f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
         "",
     ]

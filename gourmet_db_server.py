@@ -215,6 +215,15 @@ def _score_restaurant(restaurant: dict[str, Any], ranking_policy: dict[str, Any]
         score += 2
         reasons.append("조금 걸어야 함")
 
+    requested_weather = str(ranking_policy.get("requested_weather") or "")
+    if requested_weather == "비":
+        if distance_m <= 500:
+            score += 5
+            reasons.append("비 오는 날 이동 부담 낮음")
+        if "실내" in restaurant["purpose_tags"]:
+            score += 3
+            reasons.append("비 오는 날 실내 이용 적합")
+
     max_price_level = int(ranking_policy.get("max_price_level", 2) or 2)
     if price_level <= max_price_level:
         score += 10

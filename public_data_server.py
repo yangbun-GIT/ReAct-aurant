@@ -562,10 +562,19 @@ def _score_public_restaurant(
         reasons.append("카페보다 식사 후보에 가까움")
 
     weather_hints = ranking_policy.get("weather_hints", []) or []
-    matched_hints = [hint for hint in weather_hints if hint and hint in blob]
+    matched_hints = [hint for hint in weather_hints if hint and len(str(hint)) > 1 and hint in blob]
     if matched_hints:
         score += 5
         reasons.append(f"날씨 힌트 매칭: {', '.join(matched_hints[:3])}")
+
+    requested_weather = ranking_policy.get("requested_weather")
+    if requested_weather == "비" and isinstance(distance_m, int):
+        if distance_m <= 500:
+            score += 6
+            reasons.append("비 오는 날 이동 부담이 낮은 가까운 거리")
+        elif distance_m <= 1000:
+            score += 3
+            reasons.append("비 오는 날 이동 가능한 거리")
 
     max_distance_m = ranking_policy.get("max_distance_m")
     if isinstance(distance_m, int) and max_distance_m:
