@@ -140,7 +140,16 @@ class RequestParsingTests(unittest.TestCase):
         self.assertIn("지역=전주 웨리단길", parsed.extracted_conditions)
         self.assertIn("날씨조건=비", parsed.extracted_conditions)
         self.assertIn("목적=일반 식사", parsed.extracted_conditions)
+        self.assertIn("최대거리=700m", parsed.extracted_conditions)
         self.assertFalse(any(issue["severity"] == "error" for issue in guard["issues"]))
+
+    def test_parse_alcohol_intent_as_bar_request(self) -> None:
+        parsed = parse_user_request("전주 에코시티 혼술 할 곳 추천")
+
+        self.assertEqual(parsed.location, "전주 송천동")
+        self.assertEqual(parsed.cuisine, "술집")
+        self.assertIn("혼술", parsed.purpose)
+        self.assertIn("음식종류=술집", parsed.extracted_conditions)
 
     def test_parse_weather_condition_across_jeonju_aliases(self) -> None:
         cases = {
@@ -155,6 +164,12 @@ class RequestParsingTests(unittest.TestCase):
 
                 self.assertEqual(parsed.location, expected_location)
                 self.assertEqual(parsed.requested_weather, "비")
+
+    def test_weather_detection_does_not_treat_food_syllables_as_weather(self) -> None:
+        parsed = parse_user_request("전주 객사 비빔밥 맛집 추천")
+
+        self.assertEqual(parsed.cuisine, "비빔밥")
+        self.assertIsNone(parsed.requested_weather)
 
     def test_requested_weather_overrides_actual_weather_for_ranking_policy(self) -> None:
         parsed = ParsedRequest(
@@ -173,6 +188,8 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(policy["actual_weather"], "맑음")
         self.assertEqual(policy["requested_weather"], "비")
         self.assertIn("실내 좌석", policy["weather_hints"])
+        self.assertIn("막걸리", policy["weather_hints"])
+        self.assertIn("파전", policy["weather_hints"])
         self.assertIn("양식", policy["weather_hints"])
 
     def test_resolve_query_accepts_positional_natural_language(self) -> None:
@@ -317,6 +334,30 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertTrue(_matches_food_query(restaurant, "파스타"))
+
+    def test_food_query_expands_bar_intent_to_alcohol_terms(self) -> None:
+        restaurant = {
+            "name": "전주막걸리집",
+            "cuisine": "한식",
+            "address": "전주시 완산구",
+            "overview": "막걸리와 해물파전을 판매합니다.",
+            "signature_menu": ["막걸리", "해물파전"],
+            "operation": {},
+        }
+
+        self.assertTrue(_matches_food_query(restaurant, "술집"))
+
+    def test_bar_intent_does_not_match_unrelated_single_syllable_text(self) -> None:
+        restaurant = {
+            "name": "전주비빔밥집",
+            "cuisine": "한식",
+            "address": "전주시 완산구",
+            "overview": "전주비빔밥을 판매합니다.",
+            "signature_menu": ["육회비빔밥"],
+            "operation": {},
+        }
+
+        self.assertFalse(_matches_food_query(restaurant, "술집"))
 
     def test_public_rank_scores_jeonju_food_candidates(self) -> None:
         candidate = _standardize_restaurant(
@@ -505,6 +546,7 @@ class PublicReflectionTests(unittest.TestCase):
         )
 
         self.assertIn("사용자 요청 날씨 조건=비를 우선 반영", answer)
+        self.assertIn("보편적인 기대: 비 오는 날은 파전, 막걸리", answer)
         self.assertIn("실제 날씨 조회: 전주 웨리단길 기준 맑음, 12.9도", answer)
 
 

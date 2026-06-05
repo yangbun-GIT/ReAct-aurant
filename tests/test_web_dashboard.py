@@ -17,6 +17,7 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("Trace 코드 흐름", html)
         self.assertIn("실행 로그", html)
         self.assertIn("Trace JSONL", html)
+        self.assertIn("LLM 모드", html)
         self.assertIn("stderr 출력 없음", html)
         self.assertIn("answer-pre", html)
         self.assertIn("answer-view", html)
@@ -49,6 +50,8 @@ class WebDashboardTests(unittest.TestCase):
                     "query": "전주 객사 맛집 추천",
                     "data_source": "local",
                     "llm_mode": "no",
+                    "effective_data_source": "local → local sample",
+                    "effective_llm_mode": "no → rule fallback",
                     "returncode": 0,
                     "trace_events": [{"step": 1}],
                     "final_answer": "최종 추천 결과",
@@ -61,6 +64,8 @@ class WebDashboardTests(unittest.TestCase):
 
                 self.assertEqual(saved["query"], "전주 객사 맛집 추천")
                 self.assertEqual(index[0]["run_id"], "test_001")
+                self.assertEqual(index[0]["effective_data_source"], "local → local sample")
+                self.assertEqual(index[0]["effective_llm_mode"], "no → rule fallback")
                 self.assertEqual(index[0]["event_count"], 1)
             finally:
                 web_dashboard.RUNS_ROOT = original_root
@@ -91,6 +96,7 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertIn("--trace", record["command"])
                 self.assertEqual(record["returncode"], 0)
                 self.assertEqual(record["final_answer"], "최종 추천 결과")
+                self.assertEqual(record["effective_llm_mode"], "no → rule fallback")
             finally:
                 web_dashboard.RUNS_ROOT = original_root
 

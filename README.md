@@ -26,6 +26,8 @@
 - TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 거리, 상세정보 충실도, 음식 종류 일치도로 추천하고 임의 평점/리뷰/가격을 생성하지 않습니다.
 - 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. 사전에 없는 전주 지명은 TourAPI `searchKeyword2`로 좌표를 찾아 반경 검색을 시도합니다.
 - 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
+- 비/눈/더움/추움/맑음 같은 날씨 조건은 사용자가 입력한 조건을 실제 조회 날씨보다 우선합니다. 비 오는 날은 파전, 막걸리, 따뜻한 국물, 가까운 실내 좌석처럼 보편적인 기대를 힌트로 반영하고, 최종 답변에도 그 근거를 표시합니다.
+- `술집`, `혼술`, `포차`, `호프`, `이자카야` 등 술자리 의도는 일반 한식 후보로 임의 대체하지 않습니다. TourAPI에서 직접 맞는 후보가 없으면 후보 부족과 데이터 한계를 Reflection에 표시합니다.
 
 ## Agent 구조 점검 기준
 
@@ -132,6 +134,8 @@ LLM Agent 환경 변수:
 - `--data-source public`: TourAPI 공공데이터 경로를 우선 사용합니다. 전주 외 지역이거나 키가 없으면 로컬 fallback을 기록합니다.
 - `--data-source local`: 공공데이터를 호출하지 않고 로컬 샘플 데이터셋만 사용합니다.
 
+`auto`는 실행 시점에 실제 사용 경로가 달라질 수 있습니다. 웹 대시보드의 실행 요약과 저장된 실행 목록에는 예를 들어 `auto -> TourAPI`, `auto -> TourAPI -> local fallback`, `auto -> GPT`, `auto -> rule fallback`처럼 실제 선택된 데이터 소스와 LLM 경로가 함께 표시됩니다.
+
 지원하는 전주 세부 지역:
 
 기준 자료: [전주시 대표사이트 행정구역](https://jeonju.go.kr/index.9is?contentUid=ff8080818990c349018b041a9ed03a70)
@@ -192,6 +196,7 @@ docker compose up --build
 - ReAct Trace 코드 흐름
 - 원본 Trace JSONL
 - 질문별 저장된 실행 로그
+- `auto` 설정이 실제로 선택한 데이터 소스와 LLM 경로
 
 웹 실행 결과는 `logs/web_runs/<run_id>/`에 저장됩니다. 이 경로는 `.gitignore`의 `logs/` 규칙에 의해 GitHub와 zip 제출물에서 제외됩니다. 대시보드는 키 값을 화면에 표시하지 않으며, Agent 실행 명령과 Trace만 저장합니다.
 저장된 실행은 대시보드의 항목별 `삭제` 또는 `전체 삭제` 버튼으로 지울 수 있습니다. Docker Compose 실행 시 `./logs`가 컨테이너에 마운트되므로 웹에서 삭제하면 로컬 `logs/web_runs` 폴더의 해당 기록도 같이 삭제됩니다.
@@ -212,7 +217,7 @@ docker compose up --build
 
 `public_data_server.py`
 
-- `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다.
+- `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다. 술집 의도는 막걸리, 전집, 포차, 호프, 이자카야 등 직접 관련 키워드로 확장하되 일반 식당으로 무리하게 채우지 않습니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.

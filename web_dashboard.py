@@ -185,6 +185,59 @@ def build_code_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return code_flow
 
 
+def infer_effective_data_source(data_source: str, events: list[dict[str, Any]], final_answer: str = "") -> str:
+    actions = [str(event.get("action_name") or "") for event in events]
+    used_public = any(
+        action in {"search_tourapi_restaurants", "get_tourapi_restaurant_detail", "rank_tourapi_restaurants"}
+        for action in actions
+    ) or "TourAPI" in final_answer
+    used_local = any(action in {"search_restaurants", "get_restaurant_detail", "rank_restaurants"} for action in actions)
+
+    if used_public and used_local:
+        effective = "TourAPI → local fallback"
+    elif used_public:
+        effective = "TourAPI"
+    elif used_local:
+        effective = "local sample"
+    elif data_source == "public":
+        effective = "TourAPI"
+    elif data_source == "local":
+        effective = "local sample"
+    else:
+        effective = "not resolved"
+
+    return f"{data_source} → {effective}" if data_source == "auto" else f"{data_source} → {effective}"
+
+
+def infer_effective_llm_mode(llm_mode: str, events: list[dict[str, Any]]) -> str:
+    used_gpt = any(str(event.get("action_name") or "") == "openai.chat.completions.create" for event in events)
+    disabled = any(
+        event.get("agent_name") == "LLM Planner"
+        and isinstance(event.get("observation"), dict)
+        and event["observation"].get("llm_enabled") is False
+        for event in events
+    )
+    if used_gpt:
+        effective = "GPT"
+    elif disabled or llm_mode == "no":
+        effective = "rule fallback"
+    else:
+        effective = "not resolved"
+    return f"{llm_mode} → {effective}" if llm_mode == "auto" else f"{llm_mode} → {effective}"
+
+
+def enrich_run_record(record: dict[str, Any]) -> dict[str, Any]:
+    events = record.get("trace_events", [])
+    final_answer = str(record.get("final_answer", ""))
+    record["effective_data_source"] = record.get("effective_data_source") or infer_effective_data_source(
+        str(record.get("data_source", "auto")), events, final_answer
+    )
+    record["effective_llm_mode"] = record.get("effective_llm_mode") or infer_effective_llm_mode(
+        str(record.get("llm_mode", "auto")), events
+    )
+    return record
+
+
 def extract_final_answer(stdout: str, events: list[dict[str, Any]]) -> str:
     for event in reversed(events):
         answer = event.get("final_answer")
@@ -204,11 +257,28 @@ def load_run_index() -> list[dict[str, Any]]:
     return _read_json(_index_path(), [])
 
 
+def load_enriched_run_index() -> list[dict[str, Any]]:
+    enriched_items: list[dict[str, Any]] = []
+    for item in load_run_index():
+        run_id = _safe_run_id(str(item.get("run_id", "")))
+        record_path = RUNS_ROOT / run_id / "run.json" if run_id else None
+        if record_path and record_path.exists():
+            record = enrich_run_record(_read_json(record_path, {}))
+            merged = {**item}
+            for key in ["effective_data_source", "effective_llm_mode"]:
+                merged[key] = record.get(key)
+            enriched_items.append(merged)
+        else:
+            enriched_items.append(item)
+    return enriched_items
+
+
 def save_run_index(items: list[dict[str, Any]]) -> None:
     _write_json(_index_path(), items[:100])
 
 
 def save_run_record(record: dict[str, Any]) -> None:
+    record = enrich_run_record(record)
     run_dir = RUNS_ROOT / record["run_id"]
     _write_json(run_dir / "run.json", record)
     index = [item for item in load_run_index() if item.get("run_id") != record["run_id"]]
@@ -219,7 +289,9 @@ def save_run_record(record: dict[str, Any]) -> None:
             "created_at": record["created_at"],
             "query": record["query"],
             "data_source": record["data_source"],
+            "effective_data_source": record["effective_data_source"],
             "llm_mode": record["llm_mode"],
+            "effective_llm_mode": record["effective_llm_mode"],
             "returncode": record["returncode"],
             "event_count": len(record.get("trace_events", [])),
             "final_answer_preview": _compact_value(record.get("final_answer", ""), 160),
@@ -376,9 +448,9 @@ def render_dashboard() -> str:
     :root {{
       --bg: #f7f7f4;
       --surface: #ffffff;
-      --surface-soft: #fafafa;
-      --line: #e2ded6;
-      --line-strong: #d4c8b8;
+      --surface-soft: #fbf7f1;
+      --line: #ece4da;
+      --line-strong: #d9cabb;
       --text: #202124;
       --muted: #6b6259;
       --accent: #c2410c;
@@ -392,6 +464,7 @@ def render_dashboard() -> str:
       --code: #18181b;
       --code-line: #27272a;
       --shadow: 0 18px 40px rgba(31, 28, 23, .08);
+      --shadow-soft: 0 8px 22px rgba(31, 28, 23, .06);
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -403,9 +476,9 @@ def render_dashboard() -> str:
       letter-spacing: 0;
     }}
     header {{
-      border-bottom: 1px solid var(--line);
       background: var(--surface);
       border-top: 4px solid var(--accent);
+      box-shadow: 0 1px 0 rgba(31, 28, 23, .05);
     }}
     .topbar {{
       max-width: 1440px;
@@ -441,19 +514,19 @@ def render_dashboard() -> str:
     }}
     section, aside {{
       background: var(--surface);
-      border: 1px solid var(--line);
+      border: 0;
       border-radius: 8px;
       box-shadow: var(--shadow);
       overflow: hidden;
     }}
     .panel-header {{
       padding: 15px 18px;
-      border-bottom: 1px solid var(--line);
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 12px;
       background: var(--surface-soft);
+      box-shadow: inset 0 -1px rgba(31, 28, 23, .05);
     }}
     h2 {{
       margin: 0;
@@ -473,7 +546,7 @@ def render_dashboard() -> str:
     }}
     textarea, select, input {{
       width: 100%;
-      border: 1px solid var(--line);
+      border: 1px solid #ded4c8;
       border-radius: 6px;
       padding: 11px 12px;
       font: inherit;
@@ -533,8 +606,8 @@ def render_dashboard() -> str:
     }}
     .status {{
       padding: 11px 12px;
-      border: 1px solid var(--line);
-      border-left: 4px solid var(--herb);
+      border: 0;
+      box-shadow: inset 4px 0 var(--herb), var(--shadow-soft);
       border-radius: 6px;
       background: #f7fbf7;
       color: var(--muted);
@@ -552,10 +625,10 @@ def render_dashboard() -> str:
       width: 100%;
       background: #fff;
       color: var(--text);
-      border: 1px solid var(--line);
+      border: 0;
       border-radius: 6px;
       min-height: 64px;
-      border-left: 4px solid transparent;
+      box-shadow: var(--shadow-soft);
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
@@ -564,7 +637,7 @@ def render_dashboard() -> str:
     }}
     .history-item:hover {{
       background: #fff9f5;
-      border-left-color: var(--accent);
+      box-shadow: inset 4px 0 var(--accent), var(--shadow-soft);
     }}
     .history-open {{
       border: 0;
@@ -583,7 +656,6 @@ def render_dashboard() -> str:
     .delete-run {{
       align-self: stretch;
       border: 0;
-      border-left: 1px solid var(--line);
       border-radius: 0;
       background: #fff7f7;
       color: var(--error);
@@ -624,38 +696,43 @@ def render_dashboard() -> str:
     }}
     .summary-grid {{
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 12px;
     }}
     .metric {{
-      border: 1px solid var(--line);
+      border: 0;
       border-radius: 6px;
       padding: 12px;
       background: #fff;
       min-height: 72px;
-      border-top: 4px solid var(--accent);
+      box-shadow: inset 0 4px var(--accent), var(--shadow-soft);
     }}
     .metric:nth-child(2) {{
-      border-top-color: var(--herb);
+      box-shadow: inset 0 4px var(--herb), var(--shadow-soft);
     }}
     .metric:nth-child(3) {{
-      border-top-color: var(--saffron);
+      box-shadow: inset 0 4px var(--saffron), var(--shadow-soft);
     }}
     .metric:nth-child(4) {{
-      border-top-color: #64748b;
+      box-shadow: inset 0 4px #64748b, var(--shadow-soft);
+    }}
+    .metric:nth-child(5) {{
+      box-shadow: inset 0 4px #7c3aed, var(--shadow-soft);
     }}
     .metric strong {{
       display: block;
-      font-size: 21px;
+      font-size: 18px;
       margin-top: 4px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
     }}
     .tabs {{
       display: flex;
       flex-wrap: wrap;
-      border-bottom: 1px solid var(--line);
       gap: 6px;
       padding: 10px;
       background: var(--surface-soft);
+      box-shadow: inset 0 -1px rgba(31, 28, 23, .05);
     }}
     .tab-button {{
       border: 1px solid transparent;
@@ -669,7 +746,8 @@ def render_dashboard() -> str:
     .tab-button.active {{
       background: #fff3ec;
       color: var(--accent-dark);
-      border-color: #f1c9b8;
+      border-color: transparent;
+      box-shadow: inset 0 -3px var(--accent);
     }}
     .tab-button:hover {{
       transform: none;
@@ -687,7 +765,7 @@ def render_dashboard() -> str:
       word-break: break-word;
       background: #fff;
       color: var(--text);
-      border: 1px solid var(--line);
+      border: 0;
       border-radius: 6px;
       padding: 16px;
       overflow: auto;
@@ -708,9 +786,9 @@ def render_dashboard() -> str:
       display: grid;
       gap: 8px;
       padding: 14px;
-      border: 1px solid #ead8c6;
       border-radius: 6px;
       background: #fffdfb;
+      box-shadow: var(--shadow-soft);
     }}
     .answer-line {{
       display: grid;
@@ -733,13 +811,13 @@ def render_dashboard() -> str:
       gap: 12px;
     }}
     .restaurant-card {{
-      border: 1px solid var(--line);
-      border-left: 5px solid var(--accent);
+      border: 0;
       border-radius: 8px;
       background: #fff;
       padding: 15px;
       display: grid;
       gap: 12px;
+      box-shadow: inset 5px 0 var(--accent), var(--shadow-soft);
     }}
     .restaurant-title {{
       display: flex;
@@ -783,8 +861,9 @@ def render_dashboard() -> str:
       display: grid;
       grid-template-columns: 112px minmax(0, 1fr);
       gap: 10px;
-      padding: 8px 0;
-      border-top: 1px solid #f1ece5;
+      padding: 9px 10px;
+      border-radius: 6px;
+      background: #fbfaf8;
       font-size: 14px;
     }}
     .detail-key {{
@@ -809,24 +888,22 @@ def render_dashboard() -> str:
       border-radius: 999px;
       background: #fff7ed;
       color: var(--accent-dark);
-      border: 1px solid #fed7aa;
       font-size: 12px;
       font-weight: 600;
     }}
     .reflection-box {{
-      border: 1px solid #cfe6d7;
-      border-left: 5px solid var(--herb);
       background: #f7fbf7;
       border-radius: 8px;
       padding: 13px 14px;
       color: #244634;
       font-size: 14px;
+      box-shadow: inset 5px 0 var(--herb), var(--shadow-soft);
     }}
     .raw-answer {{
-      border: 1px solid var(--line);
       border-radius: 8px;
       background: #fff;
       overflow: hidden;
+      box-shadow: var(--shadow-soft);
     }}
     .raw-answer summary {{
       cursor: pointer;
@@ -837,7 +914,6 @@ def render_dashboard() -> str:
     }}
     .raw-answer pre {{
       border: 0;
-      border-top: 1px solid var(--line);
       border-radius: 0;
       max-height: 360px;
     }}
@@ -852,11 +928,10 @@ def render_dashboard() -> str:
       gap: 10px;
     }}
     .trace-row {{
-      border: 1px solid var(--line);
       border-radius: 6px;
       padding: 13px 14px;
       background: #fff;
-      border-left: 4px solid var(--herb);
+      box-shadow: inset 4px 0 var(--herb), var(--shadow-soft);
     }}
     .trace-row h3 {{
       margin: 0 0 6px;
@@ -873,10 +948,10 @@ def render_dashboard() -> str:
       gap: 10px;
     }}
     .code-line {{
-      border: 1px solid var(--line);
       border-radius: 6px;
       overflow: hidden;
       background: #fff;
+      box-shadow: var(--shadow-soft);
     }}
     .code-line code {{
       display: block;
@@ -895,7 +970,6 @@ def render_dashboard() -> str:
       padding: 28px;
       text-align: center;
       color: var(--muted);
-      border: 1px dashed var(--line);
       border-radius: 6px;
       background: var(--surface-soft);
     }}
@@ -996,6 +1070,7 @@ def render_dashboard() -> str:
             <div class="metric"><span class="subtle">Trace 이벤트</span><strong id="metricEvents">-</strong></div>
             <div class="metric"><span class="subtle">도구 호출</span><strong id="metricCalls">-</strong></div>
             <div class="metric"><span class="subtle">데이터 소스</span><strong id="metricSource">-</strong></div>
+            <div class="metric"><span class="subtle">LLM 모드</span><strong id="metricLlm">-</strong></div>
           </div>
         </div>
       </section>
@@ -1175,7 +1250,8 @@ def render_dashboard() -> str:
       document.getElementById('metricReturn').textContent = run.returncode ?? '-';
       document.getElementById('metricEvents').textContent = (run.trace_events || []).length;
       document.getElementById('metricCalls').textContent = countToolCalls(run);
-      document.getElementById('metricSource').textContent = run.data_source || '-';
+      document.getElementById('metricSource').textContent = run.effective_data_source || run.data_source || '-';
+      document.getElementById('metricLlm').textContent = run.effective_llm_mode || run.llm_mode || '-';
       renderFinalAnswer(run.final_answer || '');
       const stderrText = (run.stderr || '').trim();
       const logSections = [
@@ -1245,7 +1321,7 @@ def render_dashboard() -> str:
             <div>${{escapeHtml(item.query)}}</div>
             <div class="history-meta">
               <span>${{escapeHtml(item.created_at)}}</span>
-              <span>events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
+              <span>${{escapeHtml(item.effective_data_source || item.data_source || '-')}} · ${{escapeHtml(item.effective_llm_mode || item.llm_mode || '-')}} · events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
             </div>
           </button>
           <button class="delete-run" type="button" aria-label="실행 삭제">삭제</button>
@@ -1273,6 +1349,7 @@ def render_dashboard() -> str:
       document.getElementById('metricEvents').textContent = '-';
       document.getElementById('metricCalls').textContent = '-';
       document.getElementById('metricSource').textContent = '-';
+      document.getElementById('metricLlm').textContent = '-';
       renderFinalAnswer('');
       document.getElementById('runLog').textContent = '';
       document.getElementById('jsonTrace').textContent = '';
@@ -1516,7 +1593,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._authenticated():
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "인증이 필요합니다."})
                 return
-            self._send_json(HTTPStatus.OK, load_run_index())
+            self._send_json(HTTPStatus.OK, load_enriched_run_index())
             return
 
         match = re.fullmatch(r"/api/runs/([^/?#]+)", self.path)
@@ -1532,7 +1609,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not record_path.exists():
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "실행 기록을 찾을 수 없습니다."})
                 return
-            self._send_json(HTTPStatus.OK, _read_json(record_path, {}))
+            self._send_json(HTTPStatus.OK, enrich_run_record(_read_json(record_path, {})))
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "찾을 수 없는 경로입니다."})

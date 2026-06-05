@@ -50,6 +50,16 @@ CUISINE_KEYWORDS = {
     "양식": ["파스타", "피자", "스테이크", "브런치", "리조또", "양식", "버거", "햄버거", "샐러드"],
     "아시아식": ["쌀국수", "베트남", "태국", "타이", "인도", "커리", "카레", "아시아"],
     "해산물": ["회", "횟집", "해산물", "생선", "조개", "초밥"],
+    "술집": ["술집", "주점", "혼술", "한잔", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인", "와인바", "칵테일"],
+}
+BAR_DIRECT_MATCH_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "막걸리", "전집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"]
+STRICT_FOOD_QUERIES = {"술집", "주점", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"}
+WEATHER_EXPECTATION_MATCH_TERMS = {
+    "비": ["파전", "해물파전", "막걸리", "전집", "주점", "술집", "국밥", "찌개", "전골", "칼국수", "실내"],
+    "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내"],
+    "추움": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "온면"],
+    "더움": ["냉면", "콩국수", "막국수", "초계국수", "물회", "빙수", "샐러드", "카페"],
+    "맑음": ["카페", "브런치", "테라스", "한옥", "공원", "도보"],
 }
 
 FOOD_QUERY_STOPWORDS = {
@@ -463,6 +473,11 @@ def _food_query_terms(food_query: str | None) -> list[str]:
         term = term.strip()
         if term and term not in FOOD_QUERY_STOPWORDS and term not in cleaned_terms:
             cleaned_terms.append(term)
+    if any(term in STRICT_FOOD_QUERIES for term in cleaned_terms):
+        priority_terms = ["술집", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "주점", "맥주", "와인바", "칵테일"]
+        return [term for term in priority_terms if term in cleaned_terms] + [
+            term for term in cleaned_terms if term not in priority_terms
+        ]
     return cleaned_terms
 
 
@@ -472,6 +487,8 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
         return True
     cuisine = str(restaurant.get("cuisine") or "")
     blob = _text_blob(restaurant)
+    if str(food_query or "").strip() == "술집":
+        return any(term in blob for term in BAR_DIRECT_MATCH_TERMS)
     return any(term == cuisine or term in blob for term in terms)
 
 
@@ -540,11 +557,12 @@ def _score_public_restaurant(
     reasons.append(f"상세정보 {completeness}개 확보")
 
     desired_cuisine = ranking_policy.get("cuisine")
+    strict_food_requested = bool(desired_cuisine and str(desired_cuisine) in STRICT_FOOD_QUERIES)
     if desired_cuisine and _matches_food_query(restaurant, str(desired_cuisine)):
-        score += 10
+        score += 20 if strict_food_requested else 10
         reasons.append(f"{desired_cuisine} 조건 일치")
     elif desired_cuisine:
-        score -= 6
+        score -= 18 if strict_food_requested else 6
         reasons.append(f"{desired_cuisine} 조건 직접 매칭 없음")
 
     preferred_cuisines = ranking_policy.get("preferred_cuisines", []) or []
@@ -560,14 +578,22 @@ def _score_public_restaurant(
     if "저녁" in purpose and restaurant.get("cuisine") != "카페":
         score += 5
         reasons.append("카페보다 식사 후보에 가까움")
+    if any(term in purpose for term in ["혼술", "술자리"]) and any(term in blob for term in ["술집", "주점", "막걸리", "전집", "파전", "포차", "호프", "펍", "이자카야", "맥주", "와인", "칵테일"]):
+        score += 12
+        reasons.append("술자리 목적과 직접 관련된 메뉴/업종 단서")
 
     weather_hints = ranking_policy.get("weather_hints", []) or []
     matched_hints = [hint for hint in weather_hints if hint and len(str(hint)) > 1 and hint in blob]
     if matched_hints:
-        score += 5
+        score += min(14, 4 + len(matched_hints) * 3)
         reasons.append(f"날씨 힌트 매칭: {', '.join(matched_hints[:3])}")
 
     requested_weather = ranking_policy.get("requested_weather")
+    expectation_terms = WEATHER_EXPECTATION_MATCH_TERMS.get(str(requested_weather), [])
+    matched_expectations = [term for term in expectation_terms if term in blob]
+    if matched_expectations:
+        score += 10
+        reasons.append(f"{requested_weather} 날씨 보편 기대 매칭: {', '.join(matched_expectations[:3])}")
     if requested_weather == "비" and isinstance(distance_m, int):
         if distance_m <= 500:
             score += 6
@@ -581,8 +607,11 @@ def _score_public_restaurant(
         if distance_m <= int(max_distance_m):
             score += 4
             reasons.append(f"요청 거리 {int(max_distance_m)}m 이내")
+            if distance_m <= int(max_distance_m) * 0.6:
+                score += 3
+                reasons.append("요청 위치 중심에 가까운 후보")
         else:
-            score -= 10
+            score -= 100
             reasons.append(f"요청 거리 {int(max_distance_m)}m 초과")
 
     if ranking_policy.get("min_rating") is not None and restaurant.get("rating") is None:
@@ -615,7 +644,7 @@ def _keyword_restaurants(
 
     settings = _load_settings()
     restaurants: list[dict[str, Any]] = []
-    for term in terms[:4]:
+    for term in terms[:8]:
         result = _tourapi_request(
             "searchKeyword2",
             {
@@ -874,7 +903,14 @@ def rank_tourapi_restaurants(
         )
         ranked_candidates.append(ranked)
 
-    ranked_candidates.sort(key=lambda item: item["score"], reverse=True)
+    ranked_candidates.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            item.get("distance_m") is None,
+            int(item.get("distance_m") if item.get("distance_m") is not None else 999999),
+            item.get("name") or "",
+        )
+    )
 
     return {
         "status": "ok" if ranked_candidates else "error",

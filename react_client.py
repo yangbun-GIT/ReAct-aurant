@@ -83,7 +83,17 @@ FOOD_QUERY_TERMS = [
     "회",
     "해산물",
     "술집",
+    "주점",
+    "막걸리",
+    "전집",
+    "파전",
+    "포차",
+    "호프",
+    "펍",
+    "맥주",
+    "소주",
     "와인",
+    "와인바",
     "칵테일",
 ]
 
@@ -140,17 +150,27 @@ SAFETY_TERMS = BLOCKED_SAFETY_TERMS + CONTEXTUAL_SAFETY_TERMS
 WEATHER_CONDITION_KEYWORDS = {
     "비": ["비오는", "비오는날", "비오는날씨", "비올때", "비올 때", "비가오는", "비가 오는", "비 오는", "우천", "장마", "빗날"],
     "눈": ["눈오는", "눈오는날", "눈올때", "눈 올 때", "눈 오는", "폭설"],
-    "추움": ["추운", "춥", "한파", "쌀쌀"],
-    "더움": ["더운", "덥", "폭염", "무더운"],
+    "추움": ["추운", "춥", "한파", "쌀쌀", "추울", "찬바람"],
+    "더움": ["더운", "덥", "폭염", "무더운", "더울", "여름"],
     "맑음": ["맑은", "화창", "날씨 좋은"],
 }
 REQUESTED_WEATHER_HINTS = {
-    "비": ["비", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "칼국수", "한식", "이동 거리 짧은 곳"],
-    "눈": ["눈", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "전골", "한식", "이동 거리 짧은 곳"],
-    "추움": ["따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "한식", "실내 좌석"],
-    "더움": ["냉면", "샐러드", "가벼운 식사", "카페", "실내 좌석"],
+    "비": ["파전", "해물파전", "막걸리", "전집", "주점", "술집", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "국물", "찌개", "전골", "칼국수", "한식", "이동 거리 짧은 곳"],
+    "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내 좌석", "따뜻한 메뉴", "따뜻한메뉴", "이동 거리 짧은 곳"],
+    "추움": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "따뜻한 메뉴", "따뜻한메뉴", "국물", "한식", "실내 좌석"],
+    "더움": ["냉면", "콩국수", "막국수", "초계국수", "물회", "빙수", "샐러드", "가벼운 식사", "카페", "실내 좌석"],
     "맑음": ["도보 이동", "분위기", "일식", "양식", "카페"],
 }
+WEATHER_EXPECTATION_NOTES = {
+    "비": "보편적인 기대: 비 오는 날은 파전, 막걸리, 따뜻한 국물, 이동 부담이 낮은 실내 좌석 선호를 추천 힌트로 적용했습니다.",
+    "눈": "보편적인 기대: 눈 오는 날은 따뜻한 국물, 전골, 국밥, 가까운 실내 좌석 선호를 추천 힌트로 적용했습니다.",
+    "추움": "보편적인 기대: 추운 날은 국밥, 탕, 찌개, 전골, 라멘처럼 따뜻한 메뉴 선호를 추천 힌트로 적용했습니다.",
+    "더움": "보편적인 기대: 더운 날은 냉면, 콩국수, 물회, 빙수처럼 시원하거나 가벼운 메뉴 선호를 추천 힌트로 적용했습니다.",
+    "맑음": "보편적인 기대: 날씨가 좋은 날은 도보 이동, 분위기, 카페나 브런치 선호를 추천 힌트로 적용했습니다.",
+}
+BAR_INTENT_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일", "이자카야"]
+ALCOHOL_INTENT_TERMS = [*BAR_INTENT_TERMS, "막걸리", "전집", "파전"]
+STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS)
 
 
 class ParsedRequest(BaseModel):
@@ -394,6 +414,8 @@ def _non_cuisine_terms() -> set[str]:
 
 
 def detect_cuisine(query: str) -> str | None:
+    if _contains_any(query, BAR_INTENT_TERMS):
+        return "술집"
     for term in FOOD_QUERY_TERMS:
         if term in query:
             return term
@@ -411,6 +433,37 @@ def detect_requested_weather(query: str) -> str | None:
         if any(keyword in query or keyword.replace(" ", "") in compact for keyword in keywords):
             return weather
     return None
+
+
+def infer_max_distance_m(query: str, location: str, requested_weather: str | None) -> int:
+    explicit = re.search(r"(\d{2,4})\s*m", query.lower())
+    if explicit:
+        return max(300, min(int(explicit.group(1)), 3000))
+
+    compact_location_terms = [
+        "객사",
+        "객리단길",
+        "웨리단길",
+        "한옥마을",
+        "전북대 구정문",
+        "구정문",
+        "전북대",
+        "신시가지",
+        "에코시티",
+    ]
+    wants_nearby = _contains_any(query, ["근처", "주변", "가까운", "인근", "도보", "걸어서", "걷기"])
+    compact_area = _contains_any(location, compact_location_terms) or _contains_any(query, compact_location_terms)
+    bad_weather = requested_weather in {"비", "눈"}
+
+    if bad_weather and (wants_nearby or compact_area):
+        return 700
+    if wants_nearby and compact_area:
+        return 800
+    if compact_area:
+        return 900
+    if wants_nearby:
+        return 1000
+    return 1200
 
 
 def detect_unsupported_location(query: str) -> str | None:
@@ -647,6 +700,10 @@ def parse_user_request(query: str) -> ParsedRequest:
         purpose_parts.append("데이트")
     if "혼밥" in query:
         purpose_parts.append("혼밥")
+    if "혼술" in query:
+        purpose_parts.append("혼술")
+    elif _contains_any(query, ["술자리", "한잔"]):
+        purpose_parts.append("술자리")
     purpose = "와 ".join(purpose_parts) if purpose_parts else "일반 식사"
     if not purpose_parts:
         missing_conditions.append("방문 목적")
@@ -668,6 +725,8 @@ def parse_user_request(query: str) -> ParsedRequest:
         min_review_count = 10000
     conditions.append(f"최소평점={min_rating}")
     conditions.append(f"최소리뷰수={min_review_count}")
+    max_distance_m = infer_max_distance_m(query, location, requested_weather)
+    conditions.append(f"최대거리={max_distance_m}m")
 
     return ParsedRequest(
         location=location,
@@ -677,7 +736,7 @@ def parse_user_request(query: str) -> ParsedRequest:
         max_price_level=max_price_level,
         min_rating=min_rating,
         min_review_count=min_review_count,
-        max_distance_m=1000,
+        max_distance_m=max_distance_m,
         limit=3,
         extracted_conditions=conditions,
         fallback_location=fallback_location,
@@ -721,8 +780,11 @@ def build_ranking_policy(
         "actual_weather": weather.get("weather"),
         "requested_weather": parsed.requested_weather,
         "weather_hints": weather_hints,
+        "weather_expectation_note": WEATHER_EXPECTATION_NOTES.get(parsed.requested_weather or ""),
         "preferred_cuisines": profile.get("preferred_cuisines", []),
         "preferred_price_level": profile.get("preferred_price_level", parsed.max_price_level),
+        "target_location": parsed.location,
+        "location_strictness": "strict",
     }
 
 
@@ -787,7 +849,11 @@ def _weather_line(parsed: ParsedRequest, weather: dict[str, Any]) -> str:
         f"{weather.get('weather', '알 수 없음')}, {weather.get('temperature_c', '알 수 없음')}도"
     )
     if parsed.requested_weather:
-        return f"날씨 반영: 사용자 요청 날씨 조건={parsed.requested_weather}를 우선 반영했습니다. 실제 날씨 조회: {actual}"
+        note = WEATHER_EXPECTATION_NOTES.get(parsed.requested_weather)
+        feedback = "원하지 않으면 음식 종류나 제외 조건을 직접 입력하면 그 조건을 우선합니다."
+        if note:
+            return f"날씨 반영: 사용자 요청 날씨 조건={parsed.requested_weather}를 우선 반영했습니다. {note} {feedback} 실제 날씨 조회: {actual}"
+        return f"날씨 반영: 사용자 요청 날씨 조건={parsed.requested_weather}를 우선 반영했습니다. {feedback} 실제 날씨 조회: {actual}"
     return f"날씨 반영: {actual}"
 
 
@@ -850,6 +916,7 @@ def reflect_public_recommendations(
 ) -> tuple[list[dict[str, Any]], str]:
     accepted: list[dict[str, Any]] = []
     warnings: list[str] = []
+    strict_food = bool(parsed.cuisine and parsed.cuisine in STRICT_PUBLIC_CUISINE_TERMS)
 
     for candidate in ranked_candidates:
         if parsed.cuisine and not _public_candidate_matches_cuisine(candidate, parsed.cuisine):
@@ -859,7 +926,7 @@ def reflect_public_recommendations(
         if len(accepted) >= parsed.limit:
             break
 
-    if len(accepted) < parsed.limit:
+    if len(accepted) < parsed.limit and not strict_food:
         for candidate in ranked_candidates:
             if candidate not in accepted:
                 accepted.append(candidate)
@@ -869,6 +936,15 @@ def reflect_public_recommendations(
             warnings.append(f"공공데이터 후보가 {len(accepted)}곳만 확보되었습니다.")
         elif warnings:
             warnings.append("음식 종류 조건을 엄격히 적용하면 후보가 부족해 점수 순 대체 후보를 보완했습니다.")
+    elif len(accepted) < parsed.limit and strict_food:
+        if accepted:
+            warnings.append(
+                f"{parsed.cuisine} 의도는 엄격히 유지했습니다. TourAPI에서 직접 매칭되는 후보가 {len(accepted)}곳뿐이라 일반 식당으로 채우지 않았습니다."
+            )
+        else:
+            warnings.append(
+                f"TourAPI에서 {parsed.cuisine} 의도와 직접 맞는 후보를 찾지 못했습니다. 일반 음식점으로 임의 대체하지 않고 데이터 한계를 표시합니다."
+            )
 
     reflection = (
         "공공데이터 검토 완료: 한국관광공사 TourAPI의 주소, 좌표, 상세정보 충실도, 요청 조건 일치도를 확인했습니다. "
@@ -881,6 +957,10 @@ def reflect_public_recommendations(
 
 def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -> bool:
     terms = [cuisine]
+    if cuisine == "술집":
+        terms.extend([*BAR_INTENT_TERMS, "막걸리", "전집"])
+    elif cuisine in {"막걸리", "전집", "파전"}:
+        terms.extend(["막걸리", "전집", "파전", "해물파전"])
     for term in FOOD_QUERY_TERMS:
         if cuisine in term or term in cuisine:
             terms.append(term)
