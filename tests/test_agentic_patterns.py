@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 TRACE_PATH = Path("sample_outputs/jeonju_trace_sample.jsonl")
+REQUIRED_SCENARIO_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
 
 
 def _load_trace_events() -> list[dict]:
@@ -78,6 +79,49 @@ class AgenticPatternTraceTests(unittest.TestCase):
         final_step = max(event["step"] for event in events if event.get("pattern") == "Final Answer")
         self.assertLess(actions["Observation:rank_tourapi_restaurants"], reflection_step)
         self.assertLess(reflection_step, final_step)
+
+    def test_required_execution_scenario_trace_exposes_submission_fields(self) -> None:
+        events = _load_trace_events()
+        final_answers = [event["final_answer"] for event in events if event.get("final_answer")]
+
+        self.assertTrue(final_answers)
+        self.assertIn(REQUIRED_SCENARIO_QUERY, final_answers[-1])
+        self.assertTrue(any(event.get("thought_summary") for event in events))
+
+        tool_call_events = [
+            event
+            for event in events
+            if event.get("jsonrpc_method") == "tools/call" and not event.get("action_name", "").startswith("Observation:")
+        ]
+        tool_result_events = [
+            event
+            for event in events
+            if event.get("jsonrpc_method") == "tools/call/result" and event.get("observation")
+        ]
+
+        self.assertTrue(tool_call_events)
+        self.assertTrue(tool_result_events)
+        self.assertTrue(all("action_input" in event for event in tool_call_events))
+
+        called_tools = {event["action_name"] for event in tool_call_events}
+        observed_tools = {event["action_name"].replace("Observation:", "") for event in tool_result_events}
+        required_tools = {
+            "get_weather_context",
+            "get_user_profile",
+            "remember_preference",
+            "search_tourapi_restaurants",
+            "rank_tourapi_restaurants",
+        }
+
+        self.assertTrue(required_tools.issubset(called_tools))
+        self.assertTrue(required_tools.issubset(observed_tools))
+
+        search_event = next(event for event in tool_call_events if event["action_name"] == "search_tourapi_restaurants")
+        self.assertEqual(search_event["action_input"]["area"], "전주 객사")
+        self.assertEqual(search_event["action_input"]["max_price_level"], 2)
+        self.assertEqual(search_event["action_input"]["min_rating"], 4.2)
+        self.assertEqual(search_event["action_input"]["min_review_count"], 100)
+        self.assertEqual(search_event["action_input"]["max_distance_m"], 1000)
 
 
 if __name__ == "__main__":
