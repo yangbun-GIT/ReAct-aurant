@@ -15,150 +15,12 @@ import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from jeonju_gazetteer import JEONJU_SEARCH_AREAS, resolve_jeonju_search_area
+
 
 mcp = FastMCP("공공데이터 맛집 서버")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-JEONJU_SEARCH_AREAS: dict[str, dict[str, Any]] = {
-    "객사": {
-        "aliases": ["객사", "객리단길", "전주객사"],
-        "longitude": 127.1467,
-        "latitude": 35.8187,
-        "radius": 1500,
-    },
-    "한옥마을": {
-        "aliases": ["한옥마을", "전주한옥마을"],
-        "longitude": 127.1530,
-        "latitude": 35.8151,
-        "radius": 1500,
-    },
-    "전북대": {
-        "aliases": ["전북대", "전북대학교", "전대"],
-        "longitude": 127.1297,
-        "latitude": 35.8468,
-        "radius": 1800,
-    },
-    "전북대 구정문": {
-        "aliases": ["전북대 구정문", "전대 구정문", "구정문"],
-        "longitude": 127.1284,
-        "latitude": 35.8452,
-        "radius": 1200,
-    },
-    "웨리단길": {
-        "aliases": ["웨리단길", "전주웨리단길", "웨딩거리"],
-        "longitude": 127.1442,
-        "latitude": 35.8179,
-        "radius": 1200,
-    },
-    "송천동": {
-        "aliases": ["송천동", "송천"],
-        "longitude": 127.1214,
-        "latitude": 35.8694,
-        "radius": 1800,
-    },
-    "효자동": {
-        "aliases": ["효자동", "신시가지"],
-        "longitude": 127.1064,
-        "latitude": 35.8195,
-        "radius": 1800,
-    },
-    "혁신도시": {
-        "aliases": ["혁신도시", "전주혁신도시"],
-        "longitude": 127.0632,
-        "latitude": 35.8381,
-        "radius": 2200,
-    },
-    "아중리": {
-        "aliases": ["아중리", "아중", "인후동"],
-        "longitude": 127.1728,
-        "latitude": 35.8298,
-        "radius": 1800,
-    },
-    "서신동": {
-        "aliases": ["서신동", "서신"],
-        "longitude": 127.1166,
-        "latitude": 35.8307,
-        "radius": 1600,
-    },
-    "평화동": {
-        "aliases": ["평화동", "평화"],
-        "longitude": 127.1359,
-        "latitude": 35.7947,
-        "radius": 1800,
-    },
-    "삼천동": {
-        "aliases": ["삼천동", "삼천"],
-        "longitude": 127.1212,
-        "latitude": 35.7980,
-        "radius": 1800,
-    },
-    "중화산동": {
-        "aliases": ["중화산동", "중화산"],
-        "longitude": 127.1217,
-        "latitude": 35.8137,
-        "radius": 1600,
-    },
-    "전주역": {
-        "aliases": ["전주역", "역 앞", "역앞"],
-        "longitude": 127.1616,
-        "latitude": 35.8496,
-        "radius": 1800,
-    },
-    "전주터미널": {
-        "aliases": ["터미널", "고속버스터미널", "시외버스터미널", "전주터미널"],
-        "longitude": 127.1248,
-        "latitude": 35.8358,
-        "radius": 1800,
-    },
-    "완산구": {
-        "aliases": ["완산구"],
-        "longitude": 127.1397,
-        "latitude": 35.8125,
-        "radius": 3500,
-    },
-    "덕진구": {
-        "aliases": ["덕진구"],
-        "longitude": 127.1340,
-        "latitude": 35.8466,
-        "radius": 3500,
-    },
-    "중앙동": {
-        "aliases": ["중앙동", "고사동"],
-        "longitude": 127.1442,
-        "latitude": 35.8190,
-        "radius": 1400,
-    },
-    "풍남동": {
-        "aliases": ["풍남동", "전동", "남부시장"],
-        "longitude": 127.1484,
-        "latitude": 35.8128,
-        "radius": 1500,
-    },
-    "금암동": {
-        "aliases": ["금암동", "금암"],
-        "longitude": 127.1330,
-        "latitude": 35.8378,
-        "radius": 1600,
-    },
-    "덕진동": {
-        "aliases": ["덕진동", "덕진공원"],
-        "longitude": 127.1218,
-        "latitude": 35.8465,
-        "radius": 1800,
-    },
-    "우아동": {
-        "aliases": ["우아동", "우아"],
-        "longitude": 127.1591,
-        "latitude": 35.8336,
-        "radius": 1700,
-    },
-    "만성동": {
-        "aliases": ["만성동", "만성"],
-        "longitude": 127.0788,
-        "latitude": 35.8402,
-        "radius": 1800,
-    },
-}
 GAEKSA_COORDINATES = {
     "longitude": JEONJU_SEARCH_AREAS["객사"]["longitude"],
     "latitude": JEONJU_SEARCH_AREAS["객사"]["latitude"],
@@ -379,19 +241,7 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _resolve_search_area(area: str | None, near_gaeksa: bool = False) -> dict[str, Any] | None:
-    if near_gaeksa:
-        return {"name": "객사", "resolution_source": "local_jeonju_gazetteer", **JEONJU_SEARCH_AREAS["객사"]}
-
-    text = area or ""
-    matched: tuple[int, str, dict[str, Any]] | None = None
-    for name, config in JEONJU_SEARCH_AREAS.items():
-        for alias in config["aliases"]:
-            if alias in text and (matched is None or len(alias) > matched[0]):
-                matched = (len(alias), name, config)
-    if matched is None:
-        return None
-    _, name, config = matched
-    return {"name": name, "resolution_source": "local_jeonju_gazetteer", **config}
+    return resolve_jeonju_search_area(area, near_gaeksa=near_gaeksa)
 
 
 def _clean_jeonju_location_keyword(area: str | None) -> str | None:
@@ -623,6 +473,10 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
     cuisine = str(restaurant.get("cuisine") or "")
     blob = _text_blob(restaurant)
     return any(term == cuisine or term in blob for term in terms)
+
+
+def _is_jeonju_restaurant(restaurant: dict[str, Any]) -> bool:
+    return "전주" in (restaurant.get("address") or "")
 
 
 def _merge_restaurants(restaurants: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -860,6 +714,7 @@ def search_tourapi_restaurants(
             rows=rows,
         )
     )
+    restaurants = [restaurant for restaurant in restaurants if _is_jeonju_restaurant(restaurant)]
 
     if max_distance_m and reference_coordinates is not None:
         restaurants = [

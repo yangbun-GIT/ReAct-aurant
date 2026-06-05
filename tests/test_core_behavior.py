@@ -3,6 +3,7 @@ from argparse import Namespace
 
 from public_data_server import (
     _matches_food_query,
+    _is_jeonju_restaurant,
     _resolve_search_area,
     _score_public_restaurant,
     _standardize_restaurant,
@@ -52,8 +53,28 @@ class RequestParsingTests(unittest.TestCase):
 
         self.assertEqual(parsed.location, "전주 송천동")
         self.assertEqual(parsed.fallback_location, "전주 객사")
+        self.assertIsNone(parsed.fallback_reason)
         self.assertIn("지역=전주 송천동", parsed.extracted_conditions)
         self.assertFalse(any(condition.startswith("지역보정=") for condition in parsed.extracted_conditions))
+
+    def test_parse_official_jeonju_areas_without_unsupported_warning(self) -> None:
+        cases = {
+            "전주 다가동1가 한식 맛집 추천": "전주 중앙동",
+            "전주 중동 점심 맛집 추천": "전주 혁신동",
+            "전주 동산동 카페 추천": "전주 여의동",
+            "전주 호성동 저녁 맛집 추천": "전주 호성동",
+            "전주 팔복동 백반 맛집 추천": "전주 팔복동",
+            "전주 에코시티 가족 식사 추천": "전주 송천동",
+            "전주 전동 근처 한식 추천": "전주 풍남동",
+        }
+
+        for query, expected_location in cases.items():
+            with self.subTest(query=query):
+                parsed = parse_user_request(query)
+                guard = evaluate_input_guard(query, parsed)
+
+                self.assertEqual(parsed.location, expected_location)
+                self.assertFalse(any(issue["type"] == "unsupported_or_unresolved_location" for issue in guard["issues"]))
 
     def test_parse_freeform_jeonju_commercial_area_and_food(self) -> None:
         parsed = parse_user_request("전주 웨리단길 파스타 맛집 추천해줘")
@@ -67,6 +88,13 @@ class RequestParsingTests(unittest.TestCase):
 
         self.assertEqual(parsed.location, "전주 전북대 구정문")
         self.assertEqual(parsed.cuisine, "소바")
+
+    def test_parse_meal_time_as_purpose_not_cuisine(self) -> None:
+        parsed = parse_user_request("전주 중동 점심 맛집 추천")
+
+        self.assertEqual(parsed.location, "전주 혁신동")
+        self.assertIsNone(parsed.cuisine)
+        self.assertIn("점심", parsed.purpose)
 
     def test_resolve_query_accepts_positional_natural_language(self) -> None:
         args = Namespace(query=None, natural_query=["전주", "효자동", "한식", "추천"])
@@ -169,6 +197,25 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertIsNotNone(search_area)
         self.assertEqual(search_area["name"], "전북대 구정문")
 
+    def test_resolve_search_area_supports_official_jeonju_aliases(self) -> None:
+        cases = {
+            "전주 다가동1가 맛집": "중앙동",
+            "전주 중동 맛집": "혁신동",
+            "전주 동산동 맛집": "여의동",
+            "전주 호성동 맛집": "호성동",
+            "전주 팔복동 맛집": "팔복동",
+            "전주 에코시티 맛집": "송천동",
+            "전주 전동 한식": "풍남동",
+        }
+
+        for query, expected_area in cases.items():
+            with self.subTest(query=query):
+                search_area = _resolve_search_area(query)
+
+                self.assertIsNotNone(search_area)
+                self.assertEqual(search_area["name"], expected_area)
+                self.assertIn("longitude", search_area)
+
     def test_food_query_matches_specific_menu_terms(self) -> None:
         restaurant = {
             "name": "테스트 파스타",
@@ -216,6 +263,10 @@ class PublicDataServerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("전주", result["message"])
+
+    def test_public_filter_rejects_non_jeonju_addresses(self) -> None:
+        self.assertTrue(_is_jeonju_restaurant({"address": "전북특별자치도 전주시 덕진구 중동로 1"}))
+        self.assertFalse(_is_jeonju_restaurant({"address": "전북특별자치도 완주군 이서면 안전로 1"}))
 
 
 class PublicReflectionTests(unittest.TestCase):

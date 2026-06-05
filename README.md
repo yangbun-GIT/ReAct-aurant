@@ -8,7 +8,7 @@
 
 | 제출 항목 | 확인 위치 | 비고 |
 | --- | --- | --- |
-| 소스 코드 | `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py` | ReAct 실행 루프와 MCP 도구 서버 구현 |
+| 소스 코드 | `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py`, `jeonju_gazetteer.py` | ReAct 실행 루프, MCP 도구 서버, 전주 지명 사전 구현 |
 | 실행 환경 | `requirements.txt` | Python 패키지 고정 |
 | README | `README.md` | 설치, 실행, 패턴, API 사용 방법 설명 |
 | 실행 로그 | `sample_outputs/jeonju_run_log.md` | 대표 프롬프트 실행 결과와 도구 호출 요약 |
@@ -24,7 +24,7 @@
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
 - TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 거리, 상세정보 충실도, 음식 종류 일치도로 추천하고 임의 평점/리뷰/가격을 생성하지 않습니다.
-- 전주 세부 위치는 객사, 웨리단길, 한옥마을, 전북대 구정문, 신시가지, 효자동, 송천동, 완산구, 덕진구 등 로컬 전주 위치 사전으로 먼저 해석하고, 사전에 없는 전주 지명은 TourAPI `searchKeyword2`로 좌표를 찾아 반경 검색을 시도합니다.
+- 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. 사전에 없는 전주 지명은 TourAPI `searchKeyword2`로 좌표를 찾아 반경 검색을 시도합니다.
 - 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
 
 ## Agent 구조 점검 기준
@@ -46,6 +46,7 @@
 env_context_server.py                    # 날씨, 사용자 선호도, 메모리 MCP 서버
 gourmet_db_server.py                     # 로컬 맛집 검색, 상세 조회, 랭킹 MCP 서버
 public_data_server.py                    # 한국관광공사 TourAPI 공공데이터 MCP 서버
+jeonju_gazetteer.py                      # 전주 행정동/법정동/생활권 별칭 사전
 react_client.py                          # ReAct Agent 실행 클라이언트
 requirements.txt                         # Python 실행 환경
 .env.example                             # 환경 변수 예시, 실제 key 없음
@@ -123,19 +124,14 @@ LLM Agent 환경 변수:
 
 지원하는 전주 세부 지역:
 
-- 객사/객리단길
-- 한옥마을
-- 전북대/전북대학교
-- 송천동
-- 효자동/신시가지
-- 혁신도시
-- 아중리/아중/인후동
-- 서신동
-- 평화동
-- 삼천동
-- 중화산동
-- 전주역
-- 전주터미널/고속버스터미널/시외버스터미널
+기준 자료: [전주시 대표사이트 행정구역](https://jeonju.go.kr/index.9is?contentUid=ff8080818990c349018b041a9ed03a70)
+
+- 행정구: 완산구, 덕진구
+- 완산구 주요 행정동/법정동: 중앙동, 다가동, 고사동, 태평동, 풍남동, 전동, 교동, 노송동, 완산동, 동서학동, 대성동, 서서학동, 중화산동, 평화동, 서신동, 삼천동, 효자동 등
+- 덕진구 주요 행정동/법정동: 진북동, 인후동, 덕진동, 금암동, 팔복동, 우아동, 호성동, 송천동, 전미동, 조촌동, 여의동, 만성동, 혁신동, 중동, 장동 등
+- 생활권/별칭: 객사, 객리단길, 웨리단길, 한옥마을, 남부시장, 전북대, 전북대 구정문, 신시가지, 에코시티, 전주역, 전주터미널, 덕진공원 등
+
+예를 들어 `전주 다가동1가`, `전주 동산동`, `전주 중동`, `전주 호성동`, `전주 에코시티`처럼 입력해도 존재하지 않는 지역으로 처리하지 않고 전주 내부 검색 기준으로 정규화합니다. `--data-source local`은 로컬 샘플 데이터셋이 객사 후보만 포함하므로 세부 지역 검색에는 `--data-source auto` 또는 `--data-source public` 사용을 권장합니다.
 
 LLM 실행 옵션:
 
@@ -300,7 +296,7 @@ Kakao Local API, Naver Search API, Google Places API는 과금 또는 키 관리
 
 ## 제출 체크리스트
 
-- 소스 코드: `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py`
+- 소스 코드: `react_client.py`, `env_context_server.py`, `gourmet_db_server.py`, `public_data_server.py`, `jeonju_gazetteer.py`
 - 실행 환경: `requirements.txt`
 - README: `README.md`
 - 실행 로그: `sample_outputs/jeonju_run_log.md`

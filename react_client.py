@@ -16,6 +16,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, Field
 
+from jeonju_gazetteer import jeonju_alias_terms, jeonju_detail_area_aliases
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -25,31 +27,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 DEFAULT_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
 DEFAULT_LOCATION = "전주 객사"
-JEONJU_DETAIL_AREA_ALIASES: dict[str, list[str]] = {
-    "객사": ["객사", "객리단길", "전주객사"],
-    "웨리단길": ["웨리단길", "전주웨리단길", "웨딩거리"],
-    "한옥마을": ["한옥마을", "전주한옥마을"],
-    "전북대 구정문": ["전북대 구정문", "전대 구정문", "구정문"],
-    "전북대": ["전북대", "전북대학교", "전대"],
-    "송천동": ["송천동", "송천"],
-    "효자동": ["효자동", "신시가지"],
-    "혁신도시": ["혁신도시", "전주혁신도시"],
-    "아중리": ["아중리", "아중", "인후동"],
-    "서신동": ["서신동", "서신"],
-    "평화동": ["평화동", "평화"],
-    "삼천동": ["삼천동", "삼천"],
-    "중화산동": ["중화산동", "중화산"],
-    "전주역": ["전주역", "역 앞", "역앞"],
-    "전주터미널": ["터미널", "고속버스터미널", "시외버스터미널", "전주터미널"],
-    "완산구": ["완산구"],
-    "덕진구": ["덕진구"],
-    "중앙동": ["중앙동", "고사동"],
-    "풍남동": ["풍남동", "전동", "남부시장"],
-    "금암동": ["금암동", "금암"],
-    "덕진동": ["덕진동", "덕진공원"],
-    "우아동": ["우아동", "우아"],
-    "만성동": ["만성동", "만성"],
-}
+JEONJU_DETAIL_AREA_ALIASES: dict[str, list[str]] = jeonju_detail_area_aliases()
 
 FOOD_QUERY_TERMS = [
     "한정식",
@@ -126,6 +104,20 @@ RESTAURANT_CONTEXT_TERMS = [
     "신시가지",
 ]
 AMBIGUOUS_FOOD_TERMS = ["아무거나", "뭐 먹지", "뭐먹지", "맛있는 거", "맛있는거", "음식", "밥", "메뉴"]
+NON_CUISINE_TERMS = {
+    "점심",
+    "저녁",
+    "아침",
+    "브런치",
+    "혼밥",
+    "회식",
+    "데이트",
+    "가족",
+    "친구",
+    "식사",
+    "야식",
+    "간식",
+}
 UNSUPPORTED_REGION_TERMS = [
     "홍대",
     "서울",
@@ -369,10 +361,7 @@ def _contains_any(query: str, terms: list[str]) -> bool:
 
 
 def _all_jeonju_alias_terms() -> list[str]:
-    terms: list[str] = []
-    for aliases in JEONJU_DETAIL_AREA_ALIASES.values():
-        terms.extend(aliases)
-    return terms
+    return jeonju_alias_terms()
 
 
 def detect_cuisine(query: str) -> str | None:
@@ -382,7 +371,7 @@ def detect_cuisine(query: str) -> str | None:
     match = re.search(r"([가-힣A-Za-z]+)\s*(?:맛집|음식점|식당|전문점)", query)
     if match:
         candidate = match.group(1).strip()
-        if candidate and candidate not in {"전주", "근처", "주변", "좋은", "괜찮은"}:
+        if candidate and candidate not in {"전주", "근처", "주변", "좋은", "괜찮은"} | NON_CUISINE_TERMS:
             return candidate
     return None
 
@@ -588,7 +577,7 @@ def parse_user_request(query: str) -> ParsedRequest:
         location = detected_location
         if location != DEFAULT_LOCATION:
             fallback_location = DEFAULT_LOCATION
-            fallback_reason = "공공데이터 경로를 사용할 수 없으면 로컬 샘플 데이터셋 기준 지역인 전주 객사로 대체합니다."
+            fallback_reason = None
     else:
         location = DEFAULT_LOCATION
         fallback_reason = "요청에 명확한 지원 지역이 없어 과제 기본 지역인 전주 객사를 사용합니다."
@@ -609,6 +598,14 @@ def parse_user_request(query: str) -> ParsedRequest:
         purpose_parts.append("친구")
     if "저녁" in query:
         purpose_parts.append("저녁")
+    if "점심" in query:
+        purpose_parts.append("점심")
+    if "가족" in query:
+        purpose_parts.append("가족")
+    if "데이트" in query:
+        purpose_parts.append("데이트")
+    if "혼밥" in query:
+        purpose_parts.append("혼밥")
     purpose = "와 ".join(purpose_parts) if purpose_parts else "친구와 저녁"
     if not purpose_parts:
         missing_conditions.append("방문 목적")
@@ -1507,15 +1504,20 @@ async def run_agent(
                 messages.append({"role": "tool", "content": f"Observation: {observation.summary}"})
 
                 if _is_error_payload(search_payload) and parsed.fallback_location:
+                    local_fallback_reason = (
+                        parsed.fallback_reason
+                        or "로컬 샘플 데이터셋은 전주 객사 후보만 포함해, 실제 전주 세부 지역 검색이 필요할 때는 TourAPI 공공데이터 경로를 사용합니다. 현재 로컬 실행에서는 전주 객사 샘플로 대체합니다."
+                    )
                     trace.write(
                         agent_name="Culinary Finder Agent",
                         pattern="Reflection Pattern",
                         thought_summary="맛집 검색 도구가 지원하지 않는 지역 error를 반환해 기본 과제 지역으로 대체합니다.",
-                        reflection=parsed.fallback_reason,
+                        reflection=local_fallback_reason,
                         observation=search_payload,
                         messages_count=len(messages),
                     )
                     parsed.location = parsed.fallback_location
+                    parsed.fallback_reason = local_fallback_reason
                     parsed.fallback_applied = True
                     parsed.extracted_conditions.append(f"대체검색지역={parsed.location}")
                     search_input = build_search_input(parsed)
