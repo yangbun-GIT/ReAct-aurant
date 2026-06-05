@@ -19,6 +19,10 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("Trace JSONL", html)
         self.assertIn("stderr 출력 없음", html)
         self.assertIn("answer-pre", html)
+        self.assertIn("answer-view", html)
+        self.assertIn("restaurant-card", html)
+        self.assertIn("전체 삭제", html)
+        self.assertIn("deleteRun", html)
         self.assertIn("log-pre", html)
         self.assertIn("--accent: #c2410c", html)
         self.assertIn("--herb: #2f7d4e", html)
@@ -97,7 +101,7 @@ class WebDashboardTests(unittest.TestCase):
 
         self.assertIn("python:3.13-slim", dockerfile)
         self.assertIn('CMD ["python", "web_dashboard.py", "--host", "0.0.0.0", "--port", "8765"]', dockerfile)
-        self.assertIn("127.0.0.1:${WEB_DOCKER_PORT:-8765}:8765", compose)
+        self.assertIn("127.0.0.1:${WEB_DOCKER_PORT:-18765}:8765", compose)
         self.assertIn('WEB_TRUST_LOCAL_PROXY: "true"', compose)
         self.assertIn("TOUR_API_SERVICE_KEY: ${TOUR_API_SERVICE_KEY:-}", compose)
         self.assertIn("OPENAI_API_KEY: ${OPENAI_API_KEY:-}", compose)
@@ -113,6 +117,44 @@ class WebDashboardTests(unittest.TestCase):
             self.assertTrue(web_dashboard.DashboardHandler._is_local_request(handler))
         finally:
             web_dashboard.WEB_SETTINGS = original_settings
+
+    def test_delete_run_record_removes_directory_and_index_entry(self) -> None:
+        original_root = web_dashboard.RUNS_ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                web_dashboard.RUNS_ROOT = Path(temp_dir)
+                run_dir = Path(temp_dir) / "run_001"
+                run_dir.mkdir()
+                (run_dir / "run.json").write_text("{}", encoding="utf-8")
+                web_dashboard.save_run_index([{"run_id": "run_001"}, {"run_id": "run_002"}])
+
+                deleted = web_dashboard.delete_run_record("run_001")
+
+                self.assertTrue(deleted)
+                self.assertFalse(run_dir.exists())
+                self.assertEqual(web_dashboard.load_run_index(), [{"run_id": "run_002"}])
+            finally:
+                web_dashboard.RUNS_ROOT = original_root
+
+    def test_clear_run_records_removes_local_run_directories(self) -> None:
+        original_root = web_dashboard.RUNS_ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                web_dashboard.RUNS_ROOT = Path(temp_dir)
+                for run_id in ["run_001", "run_002"]:
+                    run_dir = Path(temp_dir) / run_id
+                    run_dir.mkdir()
+                    (run_dir / "run.json").write_text("{}", encoding="utf-8")
+                web_dashboard.save_run_index([{"run_id": "run_001"}, {"run_id": "run_002"}])
+
+                removed = web_dashboard.clear_run_records()
+
+                self.assertEqual(removed, 2)
+                self.assertEqual(web_dashboard.load_run_index(), [])
+                self.assertFalse((Path(temp_dir) / "run_001").exists())
+                self.assertFalse((Path(temp_dir) / "run_002").exists())
+            finally:
+                web_dashboard.RUNS_ROOT = original_root
 
 
 if __name__ == "__main__":

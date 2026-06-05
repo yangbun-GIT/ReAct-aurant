@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -225,6 +226,56 @@ def save_run_record(record: dict[str, Any]) -> None:
         },
     )
     save_run_index(index)
+
+
+def _is_inside_directory(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def delete_run_record(run_id: str) -> bool:
+    safe_run_id = _safe_run_id(run_id)
+    if not safe_run_id:
+        raise ValueError("잘못된 run_id입니다.")
+
+    root = RUNS_ROOT.resolve()
+    run_dir = (RUNS_ROOT / safe_run_id).resolve()
+    if not _is_inside_directory(run_dir, root):
+        raise ValueError("삭제할 수 없는 실행 경로입니다.")
+
+    existed = run_dir.exists()
+    if existed:
+        shutil.rmtree(run_dir)
+
+    save_run_index([item for item in load_run_index() if item.get("run_id") != safe_run_id])
+    return existed
+
+
+def clear_run_records() -> int:
+    if not RUNS_ROOT.exists():
+        save_run_index([])
+        return 0
+
+    root = RUNS_ROOT.resolve()
+    removed = 0
+    for child in RUNS_ROOT.iterdir():
+        resolved = child.resolve()
+        if not _is_inside_directory(resolved, root):
+            continue
+        if child.name == "index.json":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+            removed += 1
+        elif child.is_file():
+            child.unlink()
+            removed += 1
+
+    save_run_index([])
+    return removed
 
 
 def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str) -> dict[str, Any]:
@@ -499,18 +550,64 @@ def render_dashboard() -> str:
     }}
     .history-item {{
       width: 100%;
-      text-align: left;
       background: #fff;
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 11px 12px;
       min-height: 64px;
       border-left: 4px solid transparent;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: stretch;
+      overflow: hidden;
     }}
     .history-item:hover {{
       background: #fff9f5;
       border-left-color: var(--accent);
+    }}
+    .history-open {{
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      padding: 11px 12px;
+      min-height: 64px;
+      font-weight: 700;
+    }}
+    .history-open:hover {{
+      background: transparent;
+      color: var(--accent-dark);
+      transform: none;
+    }}
+    .delete-run {{
+      align-self: stretch;
+      border: 0;
+      border-left: 1px solid var(--line);
+      border-radius: 0;
+      background: #fff7f7;
+      color: var(--error);
+      min-width: 58px;
+      padding: 8px;
+      font-size: 12px;
+    }}
+    .delete-run:hover {{
+      background: #fee2e2;
+      color: #991b1b;
+      transform: none;
+    }}
+    button.danger {{
+      border-color: #fecaca;
+      color: var(--error);
+      background: #fff;
+      min-height: 34px;
+      padding: 7px 10px;
+      font-size: 12px;
+    }}
+    button.danger:hover {{
+      background: #fee2e2;
+      border-color: #fca5a5;
+      color: #991b1b;
     }}
     .history-meta {{
       display: flex;
@@ -603,6 +700,147 @@ def render_dashboard() -> str:
       border-color: #ead8c6;
       font-size: 14px;
     }}
+    .answer-view {{
+      display: grid;
+      gap: 14px;
+    }}
+    .answer-summary {{
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid #ead8c6;
+      border-radius: 6px;
+      background: #fffdfb;
+    }}
+    .answer-line {{
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      font-size: 14px;
+    }}
+    .answer-label {{
+      color: var(--muted);
+      font-weight: 700;
+    }}
+    .answer-value {{
+      color: var(--text);
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }}
+    .restaurant-cards {{
+      display: grid;
+      gap: 12px;
+    }}
+    .restaurant-card {{
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--accent);
+      border-radius: 8px;
+      background: #fff;
+      padding: 15px;
+      display: grid;
+      gap: 12px;
+    }}
+    .restaurant-title {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .rank-badge {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }}
+    .restaurant-title h3 {{
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.25;
+    }}
+    .cuisine-pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #eef7ef;
+      color: var(--herb-dark);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .detail-list {{
+      display: grid;
+      gap: 8px;
+    }}
+    .detail-row {{
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      gap: 10px;
+      padding: 8px 0;
+      border-top: 1px solid #f1ece5;
+      font-size: 14px;
+    }}
+    .detail-key {{
+      color: var(--muted);
+      font-weight: 700;
+    }}
+    .detail-value {{
+      color: var(--text);
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }}
+    .reason-chips {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }}
+    .reason-chip {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #fff7ed;
+      color: var(--accent-dark);
+      border: 1px solid #fed7aa;
+      font-size: 12px;
+      font-weight: 600;
+    }}
+    .reflection-box {{
+      border: 1px solid #cfe6d7;
+      border-left: 5px solid var(--herb);
+      background: #f7fbf7;
+      border-radius: 8px;
+      padding: 13px 14px;
+      color: #244634;
+      font-size: 14px;
+    }}
+    .raw-answer {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }}
+    .raw-answer summary {{
+      cursor: pointer;
+      padding: 11px 14px;
+      font-weight: 700;
+      color: var(--muted);
+      background: var(--surface-soft);
+    }}
+    .raw-answer pre {{
+      border: 0;
+      border-top: 1px solid var(--line);
+      border-radius: 0;
+      max-height: 360px;
+    }}
     .log-pre, .json-pre, .code-line pre {{
       background: var(--code);
       color: #f8fafc;
@@ -686,6 +924,10 @@ def render_dashboard() -> str:
       .controls, .summary-grid {{
         grid-template-columns: 1fr;
       }}
+      .answer-line, .detail-row {{
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }}
     }}
   </style>
 </head>
@@ -736,6 +978,7 @@ def render_dashboard() -> str:
       </div>
       <div class="panel-header">
         <h2>저장된 실행</h2>
+        <button class="secondary danger" id="clearHistoryBtn" type="button">전체 삭제</button>
       </div>
       <div class="panel-body">
         <div class="history-list" id="historyList"></div>
@@ -764,7 +1007,7 @@ def render_dashboard() -> str:
           <button class="tab-button" type="button" data-tab="log">실행 로그</button>
           <button class="tab-button" type="button" data-tab="json">Trace JSONL</button>
         </div>
-        <div class="tab-panel active" id="tab-answer"><pre class="answer-pre" id="finalAnswer">아직 실행 결과가 없습니다.</pre></div>
+        <div class="tab-panel active" id="tab-answer"><div class="answer-view" id="finalAnswer"><div class="empty">아직 실행 결과가 없습니다.</div></div></div>
         <div class="tab-panel" id="tab-natural"><div class="trace-list" id="naturalTrace"></div></div>
         <div class="tab-panel" id="tab-code"><div class="code-flow" id="codeTrace"></div></div>
         <div class="tab-panel" id="tab-log"><pre class="log-pre" id="runLog"></pre></div>
@@ -794,6 +1037,129 @@ def render_dashboard() -> str:
       ).length;
     }}
 
+    function splitLabel(line) {{
+      const index = line.indexOf(':');
+      if (index > 0 && index <= 16) {{
+        return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
+      }}
+      return ['', line];
+    }}
+
+    function parseFinalAnswer(answer) {{
+      const lines = String(answer || '').split(/\\r?\\n/);
+      const intro = [];
+      const cards = [];
+      const reflection = [];
+      let current = null;
+      for (const rawLine of lines) {{
+        const line = rawLine.trim();
+        if (!line || line === '최종 추천 결과') continue;
+
+        const cardMatch = line.match(/^(\\d+)\\.\\s+(.+?)(?:\\s+\\((.+)\\))?$/);
+        if (cardMatch) {{
+          if (current) cards.push(current);
+          current = {{
+            rank: cardMatch[1],
+            name: cardMatch[2],
+            cuisine: cardMatch[3] || '',
+            details: []
+          }};
+          continue;
+        }}
+
+        if (line.startsWith('Reflection:')) {{
+          if (current) {{
+            cards.push(current);
+            current = null;
+          }}
+          reflection.push(line.replace(/^Reflection:\\s*/, ''));
+          continue;
+        }}
+
+        if (reflection.length > 0) {{
+          reflection.push(line);
+        }} else if (current) {{
+          current.details.push(line.replace(/^[-*]\\s*/, ''));
+        }} else {{
+          intro.push(line.replace(/^[-*]\\s*/, ''));
+        }}
+      }}
+      if (current) cards.push(current);
+      return {{ intro, cards, reflection: reflection.join(' ') }};
+    }}
+
+    function renderDetail(detail) {{
+      const [key, value] = splitLabel(detail);
+      if (key.includes('점수 근거')) {{
+        const chips = value.split(',').map(item => item.trim()).filter(Boolean);
+        return `
+          <div class="detail-row">
+            <span class="detail-key">${{escapeHtml(key)}}</span>
+            <span class="detail-value reason-chips">
+              ${{chips.map(chip => `<span class="reason-chip">${{escapeHtml(chip)}}</span>`).join('')}}
+            </span>
+          </div>
+        `;
+      }}
+      return `
+        <div class="detail-row">
+          <span class="detail-key">${{escapeHtml(key || '근거')}}</span>
+          <span class="detail-value">${{escapeHtml(value)}}</span>
+        </div>
+      `;
+    }}
+
+    function renderFinalAnswer(answer) {{
+      const target = document.getElementById('finalAnswer');
+      const text = String(answer || '').trim();
+      if (!text) {{
+        target.innerHTML = '<div class="empty">아직 실행 결과가 없습니다.</div>';
+        return;
+      }}
+
+      const parsed = parseFinalAnswer(text);
+      if (parsed.cards.length === 0) {{
+        target.innerHTML = `<pre class="answer-pre">${{escapeHtml(text)}}</pre>`;
+        return;
+      }}
+
+      const summaryHtml = parsed.intro.length
+        ? `<div class="answer-summary">
+            ${{parsed.intro.map(line => {{
+              const [key, value] = splitLabel(line);
+              return `<div class="answer-line"><span class="answer-label">${{escapeHtml(key || '정보')}}</span><span class="answer-value">${{escapeHtml(value)}}</span></div>`;
+            }}).join('')}}
+          </div>`
+        : '';
+
+      const cardHtml = parsed.cards.map(card => `
+        <article class="restaurant-card">
+          <div class="restaurant-title">
+            <span class="rank-badge">${{escapeHtml(card.rank)}}</span>
+            <h3>${{escapeHtml(card.name)}}</h3>
+            ${{card.cuisine ? `<span class="cuisine-pill">${{escapeHtml(card.cuisine)}}</span>` : ''}}
+          </div>
+          <div class="detail-list">
+            ${{card.details.map(renderDetail).join('')}}
+          </div>
+        </article>
+      `).join('');
+
+      const reflectionHtml = parsed.reflection
+        ? `<div class="reflection-box"><strong>Reflection</strong><br>${{escapeHtml(parsed.reflection)}}</div>`
+        : '';
+
+      target.innerHTML = `
+        ${{summaryHtml}}
+        <div class="restaurant-cards">${{cardHtml}}</div>
+        ${{reflectionHtml}}
+        <details class="raw-answer">
+          <summary>원문 답변 보기</summary>
+          <pre class="answer-pre">${{escapeHtml(text)}}</pre>
+        </details>
+      `;
+    }}
+
     function activateTab(name) {{
       document.querySelectorAll('.tab-button').forEach(button => {{
         button.classList.toggle('active', button.dataset.tab === name);
@@ -810,7 +1176,7 @@ def render_dashboard() -> str:
       document.getElementById('metricEvents').textContent = (run.trace_events || []).length;
       document.getElementById('metricCalls').textContent = countToolCalls(run);
       document.getElementById('metricSource').textContent = run.data_source || '-';
-      document.getElementById('finalAnswer').textContent = run.final_answer || '최종 추천 결과가 없습니다.';
+      renderFinalAnswer(run.final_answer || '');
       const stderrText = (run.stderr || '').trim();
       const logSections = [
         '[stdout]',
@@ -872,18 +1238,23 @@ def render_dashboard() -> str:
         return;
       }}
       items.forEach(item => {{
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'history-item';
-        button.innerHTML = `
-          <div>${{escapeHtml(item.query)}}</div>
-          <div class="history-meta">
-            <span>${{escapeHtml(item.created_at)}}</span>
-            <span>events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
-          </div>
+        const row = document.createElement('div');
+        row.className = 'history-item';
+        row.innerHTML = `
+          <button class="history-open" type="button">
+            <div>${{escapeHtml(item.query)}}</div>
+            <div class="history-meta">
+              <span>${{escapeHtml(item.created_at)}}</span>
+              <span>events ${{escapeHtml(item.event_count)}} · code ${{escapeHtml(item.returncode)}}</span>
+            </div>
+          </button>
+          <button class="delete-run" type="button" aria-label="실행 삭제">삭제</button>
         `;
-        button.addEventListener('click', () => loadRun(item.run_id));
-        historyList.appendChild(button);
+        row.querySelector('.history-open').addEventListener('click', () => loadRun(item.run_id));
+        row.querySelector('.delete-run').addEventListener('click', () => {{
+          deleteRun(item.run_id).catch(error => setStatus(error.message));
+        }});
+        historyList.appendChild(row);
       }});
     }}
 
@@ -893,6 +1264,40 @@ def render_dashboard() -> str:
       const run = await response.json();
       renderRun(run);
       setStatus(`실행 ${{runId}} 불러옴`);
+    }}
+
+    function resetRunView() {{
+      state.currentRun = null;
+      document.getElementById('selectedRun').textContent = '선택된 실행 없음';
+      document.getElementById('metricReturn').textContent = '-';
+      document.getElementById('metricEvents').textContent = '-';
+      document.getElementById('metricCalls').textContent = '-';
+      document.getElementById('metricSource').textContent = '-';
+      renderFinalAnswer('');
+      document.getElementById('runLog').textContent = '';
+      document.getElementById('jsonTrace').textContent = '';
+      document.getElementById('naturalTrace').innerHTML = '<div class="empty">Trace 자연어 흐름이 없습니다.</div>';
+      document.getElementById('codeTrace').innerHTML = '<div class="empty">Trace 코드 흐름이 없습니다.</div>';
+    }}
+
+    async function deleteRun(runId) {{
+      if (!confirm('선택한 실행 기록을 삭제할까요? 로컬 logs/web_runs의 해당 폴더도 삭제됩니다.')) return;
+      const response = await fetch(`/api/runs/${{encodeURIComponent(runId)}}`, {{ method: 'DELETE' }});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '실행 기록 삭제에 실패했습니다.');
+      if (state.currentRun && state.currentRun.run_id === runId) resetRunView();
+      await loadHistory();
+      setStatus(`실행 기록 삭제 완료: ${{runId}}`);
+    }}
+
+    async function clearHistory() {{
+      if (!confirm('저장된 모든 실행 기록을 삭제할까요? 로컬 logs/web_runs 내용도 삭제됩니다.')) return;
+      const response = await fetch('/api/runs', {{ method: 'DELETE' }});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '전체 실행 기록 삭제에 실패했습니다.');
+      resetRunView();
+      await loadHistory();
+      setStatus(`전체 실행 기록 삭제 완료: ${{body.removed}}개`);
     }}
 
     document.getElementById('runForm').addEventListener('submit', async event => {{
@@ -926,6 +1331,9 @@ def render_dashboard() -> str:
       button.addEventListener('click', () => activateTab(button.dataset.tab));
     }});
     document.getElementById('refreshBtn').addEventListener('click', loadHistory);
+    document.getElementById('clearHistoryBtn').addEventListener('click', () => {{
+      clearHistory().catch(error => setStatus(error.message));
+    }});
 
     loadHistory().catch(error => setStatus(error.message));
   </script>
@@ -1167,6 +1575,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 return
             self._send_json(HTTPStatus.OK, record)
+            return
+
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "찾을 수 없는 경로입니다."})
+
+    def do_DELETE(self) -> None:
+        if not self._authenticated():
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "인증이 필요합니다."})
+            return
+
+        if self.path == "/api/runs":
+            removed = clear_run_records()
+            self._send_json(HTTPStatus.OK, {"status": "ok", "removed": removed})
+            return
+
+        match = re.fullmatch(r"/api/runs/([^/?#]+)", self.path)
+        if match:
+            run_id = _safe_run_id(match.group(1))
+            if not run_id:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "잘못된 run_id입니다."})
+                return
+            try:
+                existed = delete_run_record(run_id)
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            if not existed:
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"status": "error", "deleted": False, "run_id": run_id, "error": "실행 기록을 찾을 수 없습니다."},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"status": "ok", "deleted": True, "run_id": run_id})
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "찾을 수 없는 경로입니다."})

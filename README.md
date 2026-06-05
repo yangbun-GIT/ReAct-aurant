@@ -176,7 +176,7 @@ $env:WEB_DOCKER_PORT=18765
 docker compose up --build
 ```
 
-실행 후 브라우저에서 `http://127.0.0.1:8765/app` 또는 변경한 포트의 `/app` 주소를 엽니다. Compose 포트는 호스트의 `127.0.0.1`에만 바인딩되도록 설정되어 있습니다. `.env` 파일이 있으면 Docker Compose가 변수 치환에 사용하지만, `.dockerignore`에 의해 이미지에는 포함되지 않습니다.
+실행 후 브라우저에서 `http://127.0.0.1:18765/app` 또는 변경한 포트의 `/app` 주소를 엽니다. Compose 포트는 호스트의 `127.0.0.1`에만 바인딩되도록 설정되어 있습니다. `.env` 파일이 있으면 Docker Compose가 변수 치환에 사용하지만, `.dockerignore`에 의해 이미지에는 포함되지 않습니다.
 
 명령 실행 후 콘솔에 출력되는 `ReAct-aurant Admin: http://127.0.0.1:<port>/app` 주소를 브라우저에서 엽니다. 기본 설정은 로컬 접속 자동 로그인입니다. 회원가입은 없고 관리자 계정 하나만 사용합니다.
 
@@ -194,6 +194,7 @@ docker compose up --build
 - 질문별 저장된 실행 로그
 
 웹 실행 결과는 `logs/web_runs/<run_id>/`에 저장됩니다. 이 경로는 `.gitignore`의 `logs/` 규칙에 의해 GitHub와 zip 제출물에서 제외됩니다. 대시보드는 키 값을 화면에 표시하지 않으며, Agent 실행 명령과 Trace만 저장합니다.
+저장된 실행은 대시보드의 항목별 `삭제` 또는 `전체 삭제` 버튼으로 지울 수 있습니다. Docker Compose 실행 시 `./logs`가 컨테이너에 마운트되므로 웹에서 삭제하면 로컬 `logs/web_runs` 폴더의 해당 기록도 같이 삭제됩니다.
 
 ## MCP 서버와 도구
 
