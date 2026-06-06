@@ -23,8 +23,8 @@
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
-- TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않으므로, 공공데이터 경로에서는 주소, 좌표, 거리, 상세정보 충실도, 음식 종류 일치도로 추천하고 임의 평점/리뷰/가격을 생성하지 않습니다.
-- 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. Kakao 우선 모드에서 사전에 없는 전주 지명은 Kakao Local API 키워드 검색으로 좌표를 찾아 반경 검색을 시도합니다.
+- TourAPI와 Kakao Local API는 평점, 리뷰 수, 가격대를 공식 응답으로 제공하지 않으므로, 공공데이터/Kakao 경로의 최종 답변에서는 해당 조건을 `적용 조건`에 넣지 않고 `미적용 조건`으로 분리합니다. 추천 점수에는 주소, 좌표, 거리, 카테고리, 상세정보 충실도, 음식 종류 일치도만 사용하고 임의 평점/리뷰/가격을 생성하지 않습니다.
+- 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. `객사`는 객리단길 중심 상권으로 좁게 해석하고, `웨리단길`, `한옥마을`과 별도 좌표/반경으로 구분합니다. Kakao 우선 모드에서 사전에 없는 전주 지명은 Kakao Local API 키워드 검색으로 좌표를 찾아 반경 검색을 시도합니다.
 - 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
 - 비/눈/더움/추움/맑음 같은 날씨 조건은 사용자가 입력한 조건을 실제 조회 날씨보다 우선합니다. 비 오는 날은 파전, 막걸리, 따뜻한 국물, 가까운 실내 좌석처럼 보편적인 기대를 힌트로 반영하고, 최종 답변에도 그 근거를 표시합니다.
 - `술집`, `혼술`, `포차`, `호프`, `이자카야` 등 술자리 의도는 일반 한식 후보로 임의 대체하지 않습니다. Kakao 우선 모드에서는 Kakao Local API 후보를 바로 정렬하고, 자동/TourAPI 모드에서는 TourAPI 후보가 부족할 때 Kakao Local API 보강을 시도합니다.
@@ -103,8 +103,9 @@ LLM Agent 환경 변수:
 
 선택 환경 변수:
 
-- `KAKAO_REST_API_KEY`: Kakao Developers에서 발급받는 REST API 키입니다. 값이 있으면 웹의 `Kakao Local API 우선 사용` 체크박스 또는 CLI `--data-source kakao`로 Kakao Local API 키워드 검색을 1차 장소 검색 도구로 호출합니다. Kakao Local은 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하지만 평점/리뷰 수/가격대는 제공하지 않으므로 해당 값은 임의 생성하지 않습니다.
-- `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `GOOGLE_PLACES_API_KEY`: 현재 기본 실행에서는 사용하지 않습니다. 추가 적용 시 비용, 호출 제한, 제출 키 관리 정책을 먼저 확인해야 합니다.
+- `KAKAO_REST_API_KEY`: Kakao Developers에서 발급받는 REST API 키입니다. 값이 있으면 웹의 `Kakao Local API 우선 사용` 체크박스 또는 CLI `--data-source kakao`로 Kakao Local API 키워드 검색을 1차 장소 검색 도구로 호출합니다. Kakao Local은 장소명, 주소, 세부 카테고리, 전화번호, 거리, 장소 URL을 제공하지만 평점/리뷰 수/가격대는 제공하지 않으므로 해당 값은 임의 생성하지 않습니다.
+- `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`: Naver Search API를 추가로 붙이면 `sort=comment`로 블로그/카페 리뷰 언급이 많은 지역 검색 결과를 우선 조회할 수 있지만, 공식 응답에 개별 식당 평점/정확한 방문자 리뷰 수/가격대 필드는 없습니다.
+- `GOOGLE_PLACES_API_KEY`: Google Places API를 추가로 붙이면 `rating`, `userRatingCount`, `priceLevel` 같은 지표를 공식 필드로 받을 수 있습니다. 단, Google Cloud 결제 설정 및 Places SKU 과금/무료 사용량 관리가 필요하므로 현재 기본 실행에서는 사용하지 않습니다.
 
 로컬 관리자 웹 대시보드 환경 변수:
 
@@ -354,7 +355,7 @@ Kakao Local API:
 - 제공 정보: 장소명, 주소, 전화번호, 카테고리, 거리, 장소 URL
 - 미제공 정보: 평점, 리뷰 수, 가격대. 해당 값은 임의 생성하지 않고 최종 답변의 데이터 한계로 표시합니다.
 
-Naver Search API와 Google Places API는 현재 기본 구현에서 제외했습니다. Google Places는 결제/초과 과금 리스크가 있고, Naver Search는 검색 결과 가공 정책을 추가 검토해야 하므로 이번 과제에서는 Kakao Local API를 장소 검색 보강 도구로 선택했습니다.
+Naver Search API와 Google Places API는 현재 기본 실행에서 제외했습니다. Naver Search API는 지역 검색 결과를 `comment` 정렬로 받을 수 있어 리뷰 언급량 보조 신호로는 쓸 수 있지만, 공식 응답에 평점/방문자 리뷰 수/가격대가 없습니다. Google Places API는 `rating`, `userRatingCount`, `priceLevel`을 제공하므로 평점/리뷰/가격을 실제 추천 기준으로 반영하려면 가장 직접적인 공식 대안입니다. 다만 Google Places는 결제 설정과 SKU별 무료 사용량/초과 과금 관리가 필요하므로, 비용 0원 제출 조건에서는 기본 비활성으로 둡니다.
 
 ## 테스트
 

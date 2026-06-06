@@ -53,6 +53,13 @@ FOOD_QUERY_TERMS = [
     "짜장",
     "중식",
     "파스타",
+    "이탈리안",
+    "이탈리아",
+    "프렌치",
+    "프랑스",
+    "멕시칸",
+    "멕시코",
+    "타코",
     "피자",
     "스테이크",
     "브런치",
@@ -61,6 +68,8 @@ FOOD_QUERY_TERMS = [
     "쌀국수",
     "베트남",
     "태국",
+    "팟타이",
+    "인도",
     "커리",
     "카레",
     "아시아",
@@ -68,6 +77,8 @@ FOOD_QUERY_TERMS = [
     "김밥",
     "분식",
     "빵집",
+    "디저트카페",
+    "디저트 카페",
     "카페",
     "디저트",
     "베이커리",
@@ -174,9 +185,10 @@ BAR_INTENT_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "포차
 BAR_CANDIDATE_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일바", "칵테일", "이자카야"]
 TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
 BAKERY_INTENT_TERMS = ["빵집", "베이커리", "빵"]
+STRICT_DESSERT_CAFE_TERMS = ["디저트카페", "디저트 카페"]
 ALCOHOL_INTENT_TERMS = [*BAR_INTENT_TERMS, *TRADITIONAL_DRINKING_TERMS]
 BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
-STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS) | set(BAKERY_INTENT_TERMS)
+STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS) | set(BAKERY_INTENT_TERMS) | set(STRICT_DESSERT_CAFE_TERMS)
 
 
 class ParsedRequest(BaseModel):
@@ -476,8 +488,15 @@ def infer_max_distance_m(query: str, location: str, requested_weather: str | Non
     ]
     wants_nearby = _contains_any(query, ["근처", "주변", "가까운", "인근", "도보", "걸어서", "걷기"])
     compact_area = _contains_any(location, compact_location_terms) or _contains_any(query, compact_location_terms)
+    narrow_commercial_area = _contains_any(location, ["객사", "객리단길", "웨리단길", "한옥마을"]) or _contains_any(
+        query, ["객사", "객리단길", "웨리단길", "한옥마을"]
+    )
     bad_weather = requested_weather in {"비", "눈"}
 
+    if bad_weather and narrow_commercial_area:
+        return 700
+    if narrow_commercial_area:
+        return 700 if wants_nearby else 800
     if bad_weather and (wants_nearby or compact_area):
         return 700
     if wants_nearby and compact_area:
@@ -1000,7 +1019,11 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
         terms.extend(["막걸리", "전집", "파전", "해물파전"])
     elif cuisine in {"빵집", "베이커리", "빵"}:
         terms.extend(["빵집", "베이커리", "제과", "제빵", "바게트", "크루아상", "소금빵", "케이크"])
+    elif cuisine in {"디저트카페", "디저트 카페"}:
+        terms.extend(["디저트카페", "디저트 카페", "빙수", "아이스크림", "케이크"])
     for term in FOOD_QUERY_TERMS:
+        if cuisine in {"디저트카페", "디저트 카페"} and term == "카페":
+            continue
         if cuisine in term or term in cuisine:
             terms.append(term)
     blob = " ".join(
@@ -1032,6 +1055,22 @@ def _public_value(value: Any, fallback: str = "정보 없음") -> str:
     return text if text else fallback
 
 
+def _split_supported_public_conditions(parsed: ParsedRequest, source_label: str) -> tuple[list[str], list[str]]:
+    unsupported_prefixes = ("최대가격대=", "최소평점=", "최소리뷰수=")
+    supported: list[str] = []
+    unsupported: list[str] = []
+    for condition in parsed.extracted_conditions:
+        if condition.startswith(unsupported_prefixes):
+            unsupported.append(condition)
+        else:
+            supported.append(condition)
+    if unsupported:
+        unsupported.append(
+            f"{source_label} 공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 필터나 점수에 반영하지 않았습니다."
+        )
+    return supported, unsupported
+
+
 def build_public_final_answer(
     query: str,
     parsed: ParsedRequest,
@@ -1050,18 +1089,29 @@ def build_public_final_answer(
         source_label = "한국관광공사 TourAPI KorService2"
         limitation = "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다."
         missing_metric_label = "TourAPI 미제공"
+    supported_conditions, unsupported_conditions = _split_supported_public_conditions(parsed, source_label)
+    profile_notes = list(profile.get("notes", []))
+    if unsupported_conditions:
+        profile_notes = [
+            note
+            for note in profile_notes
+            if not any(keyword in note for keyword in ["비싸", "가격", "리뷰", "평점"])
+        ]
+        profile_notes.append("가격/평점/리뷰 선호는 공식 API 미제공으로 반영하지 않고, 위치·업종·거리·날씨 조건을 우선했습니다.")
 
     lines = [
         "최종 추천 결과",
         "",
         f"요청: {query}",
-        f"분석 조건: {', '.join(parsed.extracted_conditions)}",
+        f"적용 조건: {', '.join(supported_conditions)}",
         f"데이터 출처: {source_label}",
         f"데이터 한계: {limitation}",
         _weather_line(parsed, weather),
-        f"사용자 선호 반영: {', '.join(profile.get('notes', []))}",
+        f"사용자 선호 반영: {', '.join(profile_notes)}",
         "",
     ]
+    if unsupported_conditions:
+        lines.insert(5, f"미적용 조건: {'; '.join(unsupported_conditions)}")
 
     feedback_lines = _exception_feedback_lines(parsed)
     if feedback_lines:
@@ -1834,6 +1884,7 @@ async def run_agent(
                         profile=profile_observation.data,
                         recommendations=recommendations,
                         reflection=reflection,
+                        data_source_label=source_for_answer,
                     )
                     answer = await run_llm_final_answer(
                         draft_answer=answer,

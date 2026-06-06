@@ -9,22 +9,22 @@ from typing import Any
 # Coordinates are representative search centers for radius search, not legal-boundary centroids.
 JEONJU_SEARCH_AREAS: dict[str, dict[str, Any]] = {
     "객사": {
-        "aliases": ["객사", "객리단길", "전주객사", "전주객사길", "영화의거리"],
-        "longitude": 127.1467,
-        "latitude": 35.8187,
-        "radius": 1500,
+        "aliases": ["객사", "객리단길", "객리단", "전주객사", "전주객사길", "객사길", "영화의거리"],
+        "longitude": 127.1450,
+        "latitude": 35.8191,
+        "radius": 800,
     },
     "웨리단길": {
         "aliases": ["웨리단길", "전주웨리단길", "웨딩거리"],
         "longitude": 127.1442,
         "latitude": 35.8179,
-        "radius": 1200,
+        "radius": 700,
     },
     "한옥마을": {
         "aliases": ["한옥마을", "전주한옥마을", "경기전"],
         "longitude": 127.1530,
         "latitude": 35.8151,
-        "radius": 1500,
+        "radius": 900,
     },
     "중앙동": {
         "aliases": [

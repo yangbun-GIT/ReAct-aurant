@@ -167,6 +167,7 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.purpose, "술자리")
         self.assertIn("음식종류=바", parsed.extracted_conditions)
         self.assertIn("목적=술자리", parsed.extracted_conditions)
+        self.assertIn("최대거리=800m", parsed.extracted_conditions)
 
     def test_parse_bar_place_intent_defaults_to_drinking_purpose(self) -> None:
         parsed = parse_user_request("비오는 날 신시가지 술집 추천")
@@ -182,6 +183,13 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.location, "전주 객사")
         self.assertEqual(parsed.cuisine, "빵집")
         self.assertIn("음식종류=빵집", parsed.extracted_conditions)
+        self.assertIn("최대거리=800m", parsed.extracted_conditions)
+
+    def test_parse_dessert_cafe_before_general_cafe(self) -> None:
+        parsed = parse_user_request("전주 객사 디저트카페 추천")
+
+        self.assertEqual(parsed.location, "전주 객사")
+        self.assertEqual(parsed.cuisine, "디저트카페")
 
     def test_parse_weather_condition_across_jeonju_aliases(self) -> None:
         cases = {
@@ -324,6 +332,13 @@ class PublicDataServerTests(unittest.TestCase):
 
         self.assertIsNotNone(search_area)
         self.assertEqual(search_area["name"], "전북대 구정문")
+
+    def test_gaeksa_area_uses_narrow_commercial_radius(self) -> None:
+        search_area = _resolve_search_area("전주 객사 맛집")
+
+        self.assertIsNotNone(search_area)
+        self.assertEqual(search_area["name"], "객사")
+        self.assertLessEqual(search_area["radius"], 800)
 
     def test_resolve_search_area_supports_official_jeonju_aliases(self) -> None:
         cases = {
@@ -476,6 +491,35 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(restaurant["source"], "Kakao Local API")
         self.assertEqual(restaurant["signature_menu"], [])
         self.assertEqual(restaurant["search_keyword"], "와인바")
+
+    def test_kakao_category_infers_fine_grained_cuisine(self) -> None:
+        cases = [
+            ("음식점 > 양식 > 이탈리안", "이탈리안"),
+            ("음식점 > 아시아음식 > 베트남음식", "베트남"),
+            ("음식점 > 카페 > 디저트카페", "디저트 카페"),
+            ("음식점 > 간식 > 제과,베이커리", "베이커리"),
+            ("음식점 > 술집 > 와인바", "바"),
+        ]
+
+        for category_name, expected in cases:
+            with self.subTest(category_name=category_name):
+                restaurant = _standardize_kakao_place(
+                    {
+                        "id": category_name,
+                        "place_name": "테스트 장소",
+                        "category_name": category_name,
+                        "category_group_code": "FD6",
+                        "category_group_name": "음식점",
+                        "road_address_name": "전북특별자치도 전주시 완산구 전주객사길 1",
+                        "x": "127.1467",
+                        "y": "35.8187",
+                    },
+                    reference_coordinates={"longitude": 127.1467, "latitude": 35.8187},
+                    reference_name="객사",
+                    requested_keyword=None,
+                )
+
+                self.assertEqual(restaurant["cuisine"], expected)
 
     @patch.dict("os.environ", {"KAKAO_REST_API_KEY": ""})
     def test_kakao_local_search_reports_missing_key_as_observation(self) -> None:
@@ -674,6 +718,51 @@ class PublicReflectionTests(unittest.TestCase):
         self.assertIn("사용자 요청 날씨 조건=비를 우선 반영", answer)
         self.assertIn("보편적인 기대: 비 오는 날은 파전, 막걸리", answer)
         self.assertIn("실제 날씨 조회: 전주 웨리단길 기준 맑음, 12.9도", answer)
+
+    def test_public_final_answer_separates_unavailable_metric_conditions(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="빵집",
+            extracted_conditions=[
+                "지역=전주 객사",
+                "음식종류=빵집",
+                "최대가격대=2",
+                "최소평점=4.0",
+                "최소리뷰수=50",
+                "최대거리=800m",
+            ],
+        )
+
+        answer = build_public_final_answer(
+            "전주 객사 빵집 추천",
+            parsed,
+            {"location": "전주 객사", "weather": "맑음", "temperature_c": 21.5},
+            {"notes": ["너무 비싸지 않은 곳", "리뷰가 좋은 곳", "걷기 부담 없는 거리"]},
+            [
+                {
+                    "restaurant_id": "kakao:1",
+                    "name": "PNB풍년제과 전주본점",
+                    "cuisine": "베이커리",
+                    "source": "Kakao Local API",
+                    "address": "전주시 완산구",
+                    "distance_m": 53,
+                    "distance_reference": "객사",
+                    "operation": {},
+                    "score_reasons": ["빵집 조건 일치"],
+                }
+            ],
+            "Kakao Local API 검토 완료",
+            data_source_label="Kakao Local API",
+        )
+
+        applied_line = next(line for line in answer.splitlines() if line.startswith("적용 조건:"))
+        preference_line = next(line for line in answer.splitlines() if line.startswith("사용자 선호 반영:"))
+        self.assertNotIn("최소평점", applied_line)
+        self.assertNotIn("최소리뷰수", applied_line)
+        self.assertNotIn("최대가격대", applied_line)
+        self.assertNotIn("리뷰가 좋은 곳", preference_line)
+        self.assertIn("미적용 조건:", answer)
+        self.assertIn("공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아", answer)
 
 
 if __name__ == "__main__":

@@ -47,22 +47,49 @@ CUISINE_KEYWORDS = {
     "중식": ["중식", "반점", "짜장", "자장", "짬뽕", "탕수육", "마라", "마라탕", "훠궈"],
     "분식": ["분식", "떡볶이", "김밥", "튀김", "라볶이", "순대"],
     "베이커리": ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크"],
+    "디저트 카페": ["디저트카페", "디저트 카페", "디저트", "빙수", "아이스크림", "케이크"],
     "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집"],
     "고기": ["고기", "갈비", "삼겹", "구이", "장어", "불고기", "곱창", "막창", "족발", "보쌈", "치킨"],
+    "이탈리안": ["이탈리안", "이탈리아", "파스타", "피자", "리조또"],
+    "프렌치": ["프렌치", "프랑스"],
+    "멕시칸": ["멕시칸", "멕시코", "타코", "부리또"],
     "양식": ["파스타", "피자", "스테이크", "브런치", "리조또", "양식", "버거", "햄버거", "샐러드"],
+    "베트남": ["쌀국수", "베트남", "분짜", "반미"],
+    "태국": ["태국", "타이", "팟타이", "똠얌"],
+    "인도": ["인도", "커리", "카레", "난", "탄두리"],
     "아시아식": ["쌀국수", "베트남", "태국", "타이", "인도", "커리", "카레", "아시아"],
     "해산물": ["회", "횟집", "해산물", "생선", "조개", "초밥"],
     "술집": ["술집", "혼술", "한잔", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인", "와인바", "칵테일", "바"],
 }
+KAKAO_CATEGORY_CUISINE_RULES = [
+    ("디저트 카페", ["디저트카페", "디저트 카페", "빙수", "아이스크림"]),
+    ("베이커리", ["제과,베이커리", "제과", "제빵", "베이커리", "빵집"]),
+    ("바", ["와인바", "칵테일바", "Bar", "BAR", " 바"]),
+    ("술집", ["술집", "포장마차", "포차", "호프", "맥주", "이자카야", "주점"]),
+    ("베트남", ["베트남", "쌀국수", "분짜", "반미"]),
+    ("태국", ["태국", "타이", "팟타이"]),
+    ("인도", ["인도", "커리", "카레"]),
+    ("멕시칸", ["멕시칸", "멕시코", "타코"]),
+    ("이탈리안", ["이탈리안", "이탈리아", "파스타", "피자", "리조또"]),
+    ("프렌치", ["프렌치", "프랑스"]),
+    ("일식", ["일식", "초밥", "스시", "라멘", "우동", "돈까스", "돈카츠", "소바"]),
+    ("중식", ["중식", "중국", "반점", "짜장", "짬뽕", "마라", "훠궈"]),
+    ("분식", ["분식", "떡볶이", "김밥", "순대"]),
+    ("고기", ["육류", "고기", "삼겹", "갈비", "곱창", "막창", "족발", "보쌈", "치킨"]),
+    ("해산물", ["해산물", "횟집", "생선회", "조개"]),
+    ("카페", ["카페", "커피전문점", "커피"]),
+    ("한식", ["한식", "국밥", "백반", "찌개", "전골", "칼국수", "비빔밥"]),
+]
 DRINKING_PLACE_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바", "칵테일", "비어", "beer"]
 TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
 BAR_ONLY_TERMS = ["와인바", "칵테일바", "바", "bar", "BAR", "펍"]
 BAKERY_TERMS = ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크", "bakery", "BAKERY"]
 BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
-STRICT_FOOD_QUERIES = {"술집", "바", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일", "칵테일바", "빵집", "베이커리", "빵"}
+STRICT_FOOD_QUERIES = {"술집", "바", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일", "칵테일바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페"}
 KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바"]
 KAKAO_BAR_ONLY_KEYWORDS = ["와인바", "칵테일바", "바", "펍"]
 KAKAO_BAKERY_KEYWORDS = ["빵집", "베이커리", "제과점", "제빵소"]
+KAKAO_DESSERT_CAFE_KEYWORDS = ["디저트카페", "디저트 카페", "빙수", "케이크"]
 WEATHER_EXPECTATION_MATCH_TERMS = {
     "비": ["파전", "해물파전", "막걸리", "전집", "술집", "국밥", "찌개", "전골", "칼국수", "실내"],
     "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내"],
@@ -558,8 +585,13 @@ def _infer_kakao_cuisine(document: dict[str, Any], requested_keyword: str | None
     )
     if _has_bakery_signal(blob):
         return "베이커리"
+    if _has_strict_bar_signal(blob):
+        return "바"
     if _has_bar_place_signal(blob):
         return "술집"
+    for cuisine, keywords in KAKAO_CATEGORY_CUISINE_RULES:
+        if any(keyword in blob for keyword in keywords):
+            return cuisine
     for cuisine, keywords in CUISINE_KEYWORDS.items():
         if any(keyword in blob for keyword in keywords):
             return cuisine
@@ -655,7 +687,7 @@ def _food_query_terms(food_query: str | None) -> list[str]:
         if term and term not in FOOD_QUERY_STOPWORDS and term not in cleaned_terms:
             cleaned_terms.append(term)
     if any(term in STRICT_FOOD_QUERIES for term in cleaned_terms):
-        priority_terms = ["술집", "바", "와인바", "칵테일바", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "빵집", "베이커리", "빵"]
+        priority_terms = ["술집", "바", "와인바", "칵테일바", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페"]
         return [term for term in priority_terms if term in cleaned_terms] + [
             term for term in cleaned_terms if term not in priority_terms
         ]
@@ -696,6 +728,8 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
         return _has_strict_bar_signal(blob)
     if requested in {"빵집", "베이커리", "빵"}:
         return _has_bakery_signal(blob)
+    if requested in {"디저트카페", "디저트 카페"}:
+        return any(term in blob for term in ["디저트카페", "디저트 카페", "빙수", "아이스크림", "케이크"])
     if requested in {"막걸리", "전집", "파전", "해물파전"}:
         return _has_traditional_drinking_signal(blob)
     if requested == "술집":
@@ -1081,6 +1115,8 @@ def search_kakao_local_places(
         queries = KAKAO_BAR_ONLY_KEYWORDS
     elif requested in {"빵집", "베이커리", "빵"}:
         queries = KAKAO_BAKERY_KEYWORDS
+    elif requested in {"디저트카페", "디저트 카페"}:
+        queries = KAKAO_DESSERT_CAFE_KEYWORDS
     elif requested in {"막걸리", "전집", "파전", "해물파전"}:
         queries = [requested]
     else:
@@ -1121,7 +1157,7 @@ def search_kakao_local_places(
             for place in places
             if place.get("distance_m") is None or int(place["distance_m"]) <= int(max_distance_m)
         ]
-    if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "막걸리", "전집", "파전", "해물파전"}:
+    if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페", "막걸리", "전집", "파전", "해물파전"}:
         places = [place for place in places if _matches_food_query(place, cuisine)]
 
     places.sort(
