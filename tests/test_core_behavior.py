@@ -174,6 +174,29 @@ class RequestParsingTests(unittest.TestCase):
         self.assertIn("최대거리=700m", parsed.extracted_conditions)
         self.assertFalse(any(issue["severity"] == "error" for issue in guard["issues"]))
 
+    def test_nearby_or_surrounding_terms_expand_area_without_losing_center(self) -> None:
+        cases = [
+            "전주 객사 근처 고기집 추천",
+            "전주 객사 주변 고기집 추천",
+            "전주 객사 인근 고기집 추천",
+            "전주 객사 부근 고기집 추천",
+        ]
+
+        for query in cases:
+            with self.subTest(query=query):
+                parsed = parse_user_request(query)
+
+                self.assertEqual(parsed.location, "전주 객사")
+                self.assertEqual(parsed.max_distance_m, 1000)
+                self.assertIn("최대거리=1000m", parsed.extracted_conditions)
+
+    def test_walkable_terms_keep_compact_area_narrower_than_surrounding_terms(self) -> None:
+        parsed = parse_user_request("전주 객사에서 걸어서 가기 좋은 고기집 추천")
+
+        self.assertEqual(parsed.location, "전주 객사")
+        self.assertEqual(parsed.max_distance_m, 700)
+        self.assertIn("최대거리=700m", parsed.extracted_conditions)
+
     def test_parse_alcohol_intent_as_bar_request(self) -> None:
         parsed = parse_user_request("전주 에코시티 혼술 할 곳 추천")
 

@@ -513,25 +513,34 @@ def infer_max_distance_m(query: str, location: str, requested_weather: str | Non
         "신시가지",
         "에코시티",
     ]
-    wants_nearby = _contains_any(query, ["근처", "주변", "가까운", "인근", "도보", "걸어서", "걷기"])
+    wants_surrounding = _contains_any(query, ["근처", "주변", "인근", "부근", "일대"])
+    wants_walkable = _contains_any(query, ["가까운", "도보", "걸어서", "걷기"])
     compact_area = _contains_any(location, compact_location_terms) or _contains_any(query, compact_location_terms)
     narrow_commercial_area = _contains_any(location, ["객사", "객리단길", "웨리단길", "한옥마을"]) or _contains_any(
         query, ["객사", "객리단길", "웨리단길", "한옥마을"]
     )
     bad_weather = requested_weather in {"비", "눈"}
 
+    if wants_surrounding and narrow_commercial_area:
+        return 900 if bad_weather else 1000
+    if wants_surrounding and compact_area:
+        return 900 if bad_weather else 1200
+    if wants_surrounding:
+        return 900 if bad_weather else 1200
+    if wants_walkable and narrow_commercial_area:
+        return 700
+    if wants_walkable and compact_area:
+        return 800
+    if wants_walkable:
+        return 1000
     if bad_weather and narrow_commercial_area:
         return 700
     if narrow_commercial_area:
-        return 700 if wants_nearby else 800
-    if bad_weather and (wants_nearby or compact_area):
-        return 700
-    if wants_nearby and compact_area:
         return 800
+    if bad_weather and compact_area:
+        return 700
     if compact_area:
         return 900
-    if wants_nearby:
-        return 1000
     return 1200
 
 
