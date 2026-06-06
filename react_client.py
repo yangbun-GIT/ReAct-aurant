@@ -1432,6 +1432,7 @@ async def run_llm_final_answer(
         "한국어로 자연스럽게 정리한다. 각 식당에는 반드시 추천 이유와 점수 근거를 포함한다. "
         "초안에 '평점/리뷰/가격대' 줄이 있으면 각 식당별로 반드시 그대로 보존한다. "
         "초안에 '장소 링크 지표 보강' 줄이 있으면 각 식당별로 반드시 그대로 보존한다. "
+        "초안의 '장소 링크:' 값은 Markdown 링크로 바꾸지 말고 URL 문자열을 그대로 유지한다. "
         "초안에 '예외 처리 피드백' 섹션이 있으면 삭제하지 말고 그대로 보존한다. "
         "답변 마지막에는 반드시 'Reflection:'으로 시작하는 검토 문장을 포함한다. "
         "초안에 없는 '유명', '인기', '맛있다', '평이 좋다' 같은 평가 표현을 새로 추가하지 않는다. "
@@ -2029,10 +2030,10 @@ async def run_agent(
                     "TourAPI는 평점/리뷰/가격 보강에 한계가 있어 이번 실행에서는 Kakao의 장소명, 카테고리, 주소, 거리 정보를 우선했습니다."
                 )
                 source_for_answer = "Kakao Local API"
+                metric_reflection = ""
 
                 if kakao_payload.get("status") == "ok" and kakao_payload.get("count", 0) > 0:
                     kakao_candidates = kakao_payload.get("candidates", [])
-                    metric_reflection = ""
                     if enrich_kakao_place_metrics:
                         kakao_candidates, metric_reflection = await enrich_kakao_candidates_with_place_metrics(
                             candidates=kakao_candidates,
@@ -2094,6 +2095,8 @@ async def run_agent(
                     use_llm=use_llm,
                     data_source=source_for_answer,
                 )
+                if metric_reflection and metric_reflection not in reflection:
+                    reflection = f"{reflection} {metric_reflection}"
                 trace.write(
                     agent_name="Reflection Reviewer",
                     pattern="Reflection Pattern",

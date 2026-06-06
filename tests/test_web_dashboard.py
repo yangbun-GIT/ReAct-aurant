@@ -32,6 +32,8 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("answer-pre", html)
         self.assertIn("answer-view", html)
         self.assertIn("restaurant-card", html)
+        self.assertIn("renderRichValue", html)
+        self.assertIn('target="_blank"', html)
         self.assertIn("history-title", html)
         self.assertIn("전체 삭제", html)
         self.assertIn("deleteRun", html)

@@ -1212,6 +1212,19 @@ def render_dashboard() -> str:
       return ['', line];
     }}
 
+    function renderRichValue(value) {{
+      const text = String(value ?? '');
+      const markdownLink = text.match(/^\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)$/);
+      if (markdownLink) {{
+        return `<a href="${{escapeHtml(markdownLink[2])}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(markdownLink[1])}}</a>`;
+      }}
+      const rawUrl = text.match(/^(https?:\\/\\/[^\\s]+)$/);
+      if (rawUrl) {{
+        return `<a href="${{escapeHtml(rawUrl[1])}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(rawUrl[1])}}</a>`;
+      }}
+      return escapeHtml(text);
+    }}
+
     function parseFinalAnswer(answer) {{
       const lines = String(answer || '').split(/\\r?\\n/);
       const intro = [];
@@ -1271,7 +1284,7 @@ def render_dashboard() -> str:
       return `
         <div class="detail-row">
           <span class="detail-key">${{escapeHtml(key || '근거')}}</span>
-          <span class="detail-value">${{escapeHtml(value)}}</span>
+          <span class="detail-value">${{renderRichValue(value)}}</span>
         </div>
       `;
     }}
@@ -1294,7 +1307,7 @@ def render_dashboard() -> str:
         ? `<div class="answer-summary">
             ${{parsed.intro.map(line => {{
               const [key, value] = splitLabel(line);
-              return `<div class="answer-line"><span class="answer-label">${{escapeHtml(key || '정보')}}</span><span class="answer-value">${{escapeHtml(value)}}</span></div>`;
+              return `<div class="answer-line"><span class="answer-label">${{escapeHtml(key || '정보')}}</span><span class="answer-value">${{renderRichValue(value)}}</span></div>`;
             }}).join('')}}
           </div>`
         : '';
