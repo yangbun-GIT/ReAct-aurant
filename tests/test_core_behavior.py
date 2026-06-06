@@ -18,6 +18,7 @@ from public_data_server import (
 )
 from react_client import (
     ParsedRequest,
+    _observed_metric_judgment,
     build_public_final_answer,
     build_ranking_policy,
     evaluate_input_guard,
@@ -660,6 +661,68 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["condition_checks"]["rating"], False)
         self.assertEqual(result["condition_checks"]["review_count"], False)
         self.assertEqual(result["condition_checks"]["price_level"], True)
+
+    def test_kakao_metric_judgment_rejects_failed_metrics_for_any_food_type(self) -> None:
+        for cuisine in ["일본식라면", "술집", "빵집", "디저트카페", "한식"]:
+            parsed = ParsedRequest(
+                location="전주 객사",
+                cuisine=cuisine,
+                min_rating=4.2,
+                min_review_count=100,
+                max_price_level=2,
+            )
+
+            judgment = _observed_metric_judgment(
+                {
+                    "place_url": f"https://place.map.kakao.com/{abs(hash(cuisine))}",
+                    "place_name": f"{cuisine} 후보",
+                    "rating": 3.9,
+                    "review_count": 30,
+                    "price_level": 2,
+                    "condition_checks": {
+                        "rating": False,
+                        "review_count": False,
+                        "price_level": True,
+                    },
+                },
+                parsed,
+            )
+
+            self.assertEqual(judgment["status"], "observed")
+            self.assertFalse(judgment["meets_conditions"], cuisine)
+            self.assertIn("평점 3.9 < 최소 4.2", judgment["reason"])
+            self.assertIn("리뷰 수 30 < 최소 100", judgment["reason"])
+
+    def test_kakao_metric_judgment_rejects_missing_required_metrics_for_any_food_type(self) -> None:
+        for cuisine in ["술집", "바", "베이커리", "카페", "양식"]:
+            parsed = ParsedRequest(
+                location="전주 신시가지",
+                cuisine=cuisine,
+                min_rating=4.2,
+                min_review_count=100,
+                max_price_level=2,
+            )
+
+            judgment = _observed_metric_judgment(
+                {
+                    "place_url": f"https://place.map.kakao.com/missing-{abs(hash(cuisine))}",
+                    "place_name": f"{cuisine} 후보",
+                    "rating": None,
+                    "review_count": None,
+                    "price_level": 1,
+                    "condition_checks": {
+                        "rating": None,
+                        "review_count": None,
+                        "price_level": True,
+                    },
+                },
+                parsed,
+            )
+
+            self.assertEqual(judgment["status"], "observed")
+            self.assertFalse(judgment["meets_conditions"], cuisine)
+            self.assertIn("평점 미관측", judgment["reason"])
+            self.assertIn("리뷰 수 미관측", judgment["reason"])
 
     def test_public_rank_scores_jeonju_food_candidates(self) -> None:
         candidate = _standardize_restaurant(
