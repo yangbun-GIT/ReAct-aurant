@@ -50,7 +50,7 @@ CUISINE_KEYWORDS = {
     "베이커리": ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크"],
     "디저트 카페": ["디저트카페", "디저트 카페", "디저트", "빙수", "아이스크림", "케이크"],
     "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집"],
-    "고기": ["고기", "갈비", "삼겹", "구이", "장어", "불고기", "곱창", "막창", "족발", "보쌈", "치킨"],
+    "고기": ["고기", "고기집", "고깃집", "육류", "육류고기", "갈비", "삼겹", "삼겹살", "구이", "장어", "불고기", "곱창", "막창", "족발", "보쌈", "치킨"],
     "이탈리안": ["이탈리안", "이탈리아", "파스타", "피자", "리조또"],
     "프렌치": ["프렌치", "프랑스"],
     "멕시칸": ["멕시칸", "멕시코", "타코", "부리또"],
@@ -91,6 +91,8 @@ KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "펍", "이자카야", "맥�
 KAKAO_BAR_ONLY_KEYWORDS = ["와인바", "칵테일바", "바", "펍"]
 KAKAO_BAKERY_KEYWORDS = ["빵집", "베이커리", "제과점", "제빵소"]
 KAKAO_DESSERT_CAFE_KEYWORDS = ["디저트카페", "디저트 카페", "빙수", "케이크"]
+KAKAO_MEAT_KEYWORDS = ["고기집", "육류고기", "갈비", "삼겹살", "구이", "불고기", "곱창", "막창"]
+KAKAO_MEAT_QUERY_TERMS = {"고기", "고기집", "고깃집", "육류", "육류고기", "갈비", "삼겹", "삼겹살", "구이", "불고기", "곱창", "막창"}
 WEATHER_EXPECTATION_MATCH_TERMS = {
     "비": ["파전", "해물파전", "막걸리", "전집", "술집", "국밥", "찌개", "전골", "칼국수", "실내"],
     "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내"],
@@ -1011,6 +1013,44 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
     return any(term == cuisine or term in blob for term in terms)
 
 
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", value).strip()
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    return unique
+
+
+def _area_qualified_kakao_queries(search_area: dict[str, Any], terms: list[str], *, max_queries: int = 10) -> list[str]:
+    area_name = str(search_area.get("name") or "").strip()
+    qualified_terms: list[str] = []
+    if area_name and terms:
+        qualified_terms.append(f"전주 {area_name} {terms[0]}")
+        qualified_terms.append(f"{area_name} {terms[0]}")
+    qualified_terms.extend(terms)
+    return _unique_strings(qualified_terms)[:max_queries]
+
+
+def _kakao_keyword_queries(requested: str, search_area: dict[str, Any]) -> list[str]:
+    if requested == "술집":
+        return _area_qualified_kakao_queries(search_area, KAKAO_BAR_KEYWORDS)
+    if requested == "바":
+        return _area_qualified_kakao_queries(search_area, KAKAO_BAR_ONLY_KEYWORDS)
+    if requested in {"빵집", "베이커리", "빵"}:
+        return _area_qualified_kakao_queries(search_area, KAKAO_BAKERY_KEYWORDS)
+    if requested in {"디저트카페", "디저트 카페"}:
+        return _area_qualified_kakao_queries(search_area, KAKAO_DESSERT_CAFE_KEYWORDS)
+    if requested in {"막걸리", "전집", "파전", "해물파전"}:
+        return _area_qualified_kakao_queries(search_area, [requested])
+    if requested in KAKAO_MEAT_QUERY_TERMS:
+        terms = _unique_strings([requested, *KAKAO_MEAT_KEYWORDS])
+        if requested in {"고기", "고깃집", "육류"}:
+            terms = _unique_strings(["고기집", *terms])
+        return _area_qualified_kakao_queries(search_area, terms)
+    return _area_qualified_kakao_queries(search_area, [requested], max_queries=3)
+
+
 def _is_jeonju_restaurant(restaurant: dict[str, Any]) -> bool:
     return "전주" in (restaurant.get("address") or "")
 
@@ -1148,6 +1188,12 @@ def _score_public_restaurant(
         elif rating >= float(ranking_policy["min_rating"]):
             score += 8
             reasons.append(f"장소 링크 평점 조건 충족: {rating}")
+            if rating >= 4.5:
+                score += 8
+                reasons.append(f"높은 평점 우선 반영: {rating}")
+            elif rating >= 4.0:
+                score += 4
+                reasons.append(f"양호한 평점 우선 반영: {rating}")
         else:
             score -= 40
             reasons.append(f"장소 링크 평점 조건 미달: {rating}")
@@ -1161,6 +1207,15 @@ def _score_public_restaurant(
         elif review_count >= int(ranking_policy["min_review_count"]):
             score += 8
             reasons.append(f"장소 링크 리뷰 수 조건 충족: {review_count}개")
+            if review_count >= 300:
+                score += 10
+                reasons.append(f"리뷰 많은 후보 우선 반영: {review_count}개")
+            elif review_count >= 100:
+                score += 6
+                reasons.append(f"충분한 리뷰 수 우선 반영: {review_count}개")
+            elif review_count >= 50:
+                score += 3
+                reasons.append(f"기본 조건보다 많은 리뷰 수 반영: {review_count}개")
         else:
             score -= 35
             reasons.append(f"장소 링크 리뷰 수 조건 미달: {review_count}개")
@@ -1424,18 +1479,7 @@ def search_kakao_local_places(
     radius = min(max(int(max_distance_m or search_area["radius"]), 300), 20000)
     reference_coordinates = {"longitude": search_area["longitude"], "latitude": search_area["latitude"]}
     requested = (cuisine or keyword or "맛집").strip()
-    if requested == "술집":
-        queries = KAKAO_BAR_KEYWORDS
-    elif requested == "바":
-        queries = KAKAO_BAR_ONLY_KEYWORDS
-    elif requested in {"빵집", "베이커리", "빵"}:
-        queries = KAKAO_BAKERY_KEYWORDS
-    elif requested in {"디저트카페", "디저트 카페"}:
-        queries = KAKAO_DESSERT_CAFE_KEYWORDS
-    elif requested in {"막걸리", "전집", "파전", "해물파전"}:
-        queries = [requested]
-    else:
-        queries = [requested]
+    queries = _kakao_keyword_queries(requested, search_area)
 
     places: list[dict[str, Any]] = []
     last_error: dict[str, Any] | None = None
@@ -1472,7 +1516,7 @@ def search_kakao_local_places(
             for place in places
             if place.get("distance_m") is None or int(place["distance_m"]) <= int(max_distance_m)
         ]
-    if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페", "막걸리", "전집", "파전", "해물파전"}:
+    if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페", "막걸리", "전집", "파전", "해물파전", *KAKAO_MEAT_QUERY_TERMS}:
         places = [place for place in places if _matches_food_query(place, cuisine)]
 
     metric_conditions_requested = any(value is not None for value in [max_price_level, min_rating, min_review_count])

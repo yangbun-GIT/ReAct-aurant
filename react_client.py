@@ -104,6 +104,9 @@ FOOD_QUERY_TERMS = [
     "케이크",
     "제과",
     "제빵",
+    "고기집",
+    "고깃집",
+    "육류고기",
     "고기",
     "삼겹살",
     "갈비",
@@ -2016,7 +2019,7 @@ async def run_agent(
                             "min_review_count": parsed.min_review_count,
                             "max_distance_m": parsed.max_distance_m,
                             "near_gaeksa": near_gaeksa,
-                            "limit": 8,
+                            "limit": 30,
                         },
                         mcp_server="public_data_server.py",
                         thought_summary="Thought: 사용자가 Kakao Local API 우선 사용을 활성화했으므로 장소 후보와 위치 기준을 Kakao Local API로 먼저 조회합니다.",
@@ -2043,6 +2046,7 @@ async def run_agent(
                             messages=messages,
                             use_llm=use_llm,
                             enabled=True,
+                            max_items=24,
                         )
                     kakao_rank_observation = await public_client.call_tool(
                         ToolAction(
@@ -2234,7 +2238,7 @@ async def run_agent(
                                     "min_review_count": parsed.min_review_count,
                                     "max_distance_m": parsed.max_distance_m,
                                     "near_gaeksa": near_gaeksa,
-                                    "limit": 8,
+                                    "limit": 30,
                                 },
                                 mcp_server="public_data_server.py",
                                 thought_summary="Thought: TourAPI가 요청 음식 종류를 직접 충족하지 못해 Kakao Local API로 장소 후보를 보강 검색합니다.",
@@ -2254,6 +2258,7 @@ async def run_agent(
                                     messages=messages,
                                     use_llm=use_llm,
                                     enabled=True,
+                                    max_items=24,
                                 )
                             kakao_rank_observation = await public_client.call_tool(
                                 ToolAction(

@@ -572,6 +572,56 @@ class PublicDataServerTests(unittest.TestCase):
 
                 self.assertEqual(restaurant["cuisine"], expected)
 
+    def test_kakao_meat_search_uses_area_qualified_queries(self) -> None:
+        captured_queries: list[str] = []
+
+        def fake_kakao_request(path: str, params: dict[str, object]) -> dict[str, object]:
+            captured_queries.append(str(params["query"]))
+            if params["query"] != "전주 객사 고기집":
+                return {"status": "ok", "payload": {"documents": []}}
+            return {
+                "status": "ok",
+                "payload": {
+                    "documents": [
+                        {
+                            "id": "meat-1",
+                            "place_name": "해율담",
+                            "category_name": "음식점 > 한식 > 육류,고기",
+                            "category_group_code": "FD6",
+                            "category_group_name": "음식점",
+                            "road_address_name": "전북특별자치도 전주시 완산구 현무1길 16",
+                            "phone": "0507-1359-5506",
+                            "x": "127.1455",
+                            "y": "35.8188",
+                            "distance": "340",
+                            "place_url": "http://place.map.kakao.com/meat-1",
+                        }
+                    ]
+                },
+            }
+
+        with patch("public_data_server._kakao_request", side_effect=fake_kakao_request):
+            result = search_kakao_local_places(
+                area="전주 객사",
+                cuisine="고기집",
+                min_rating=3.7,
+                min_review_count=30,
+                max_distance_m=1000,
+            )
+
+        self.assertIn("전주 객사 고기집", captured_queries)
+        self.assertIn("육류고기", captured_queries)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["query"]["queries"][0], "전주 객사 고기집")
+        self.assertEqual(result["candidates"][0]["name"], "해율담")
+        self.assertEqual(result["candidates"][0]["cuisine"], "육류,고기")
+
+    def test_parse_user_request_preserves_meat_house_intent(self) -> None:
+        parsed = parse_user_request("전주 객사 고기집 추천해봐")
+
+        self.assertEqual(parsed.location, "전주 객사")
+        self.assertEqual(parsed.cuisine, "고기집")
+
     def test_kakao_search_records_metric_proxy_without_fake_rating_review_price(self) -> None:
         kakao_payload = {
             "documents": [
