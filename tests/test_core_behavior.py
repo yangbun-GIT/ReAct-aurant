@@ -121,6 +121,9 @@ class RequestParsingTests(unittest.TestCase):
             "전주 송천동 초밥 맛집 추천": ("전주 송천동", "초밥"),
             "전주 웨리단길 파스타 맛집 추천": ("전주 웨리단길", "파스타"),
             "전주 객사 해산물 맛집 추천": ("전주 객사", "해산물"),
+            "전주 객사 일본식라면 맛집 추천": ("전주 객사", "일본식라면"),
+            "전주 신시가지 양꼬치 맛집 추천": ("전주 효자동", "양꼬치"),
+            "전주 한옥마을 브런치카페 추천": ("전주 한옥마을", "브런치카페"),
         }
 
         for query, (expected_location, expected_cuisine) in cases.items():
@@ -495,10 +498,13 @@ class PublicDataServerTests(unittest.TestCase):
     def test_kakao_category_infers_fine_grained_cuisine(self) -> None:
         cases = [
             ("음식점 > 양식 > 이탈리안", "이탈리안"),
-            ("음식점 > 아시아음식 > 베트남음식", "베트남"),
-            ("음식점 > 카페 > 디저트카페", "디저트 카페"),
+            ("음식점 > 아시아음식 > 베트남음식", "베트남음식"),
+            ("음식점 > 카페 > 디저트카페", "디저트카페"),
             ("음식점 > 간식 > 제과,베이커리", "베이커리"),
             ("음식점 > 술집 > 와인바", "바"),
+            ("음식점 > 일식 > 일본식라면", "일본식라면"),
+            ("음식점 > 중식 > 양꼬치", "양꼬치"),
+            ("음식점 > 양식 > 브런치카페", "브런치카페"),
         ]
 
         for category_name, expected in cases:
@@ -520,6 +526,60 @@ class PublicDataServerTests(unittest.TestCase):
                 )
 
                 self.assertEqual(restaurant["cuisine"], expected)
+
+    def test_kakao_search_records_metric_proxy_without_fake_rating_review_price(self) -> None:
+        kakao_payload = {
+            "documents": [
+                {
+                    "id": "ramen-1",
+                    "place_name": "객사라멘",
+                    "category_name": "음식점 > 일식 > 일본식라면",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "road_address_name": "전북특별자치도 전주시 완산구 전주객사길 10",
+                    "phone": "063-000-0000",
+                    "x": "127.1467",
+                    "y": "35.8187",
+                    "distance": "91",
+                    "place_url": "https://place.map.kakao.com/ramen-1",
+                },
+                {
+                    "id": "ramen-2",
+                    "place_name": "주소없는라멘",
+                    "category_name": "음식점 > 일식 > 일본식라면",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "x": "127.1468",
+                    "y": "35.8188",
+                    "distance": "120",
+                },
+            ]
+        }
+
+        with patch("public_data_server._kakao_request", return_value={"status": "ok", "payload": kakao_payload}):
+            result = search_kakao_local_places(
+                area="전주 객사",
+                cuisine="일본식라면",
+                max_price_level=2,
+                min_rating=4.0,
+                min_review_count=50,
+                max_distance_m=800,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["query"]["max_price_level"], 2)
+        self.assertEqual(result["query"]["min_rating"], 4.0)
+        self.assertEqual(result["query"]["min_review_count"], 50)
+        self.assertIn("공식 메타데이터 검증", result["metric_proxy_policy"])
+        self.assertEqual(set(result["unavailable_filters"]), {"rating", "review_count", "price_level"})
+        self.assertEqual(len(result["candidates"]), 1)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["cuisine"], "일본식라면")
+        self.assertIsNone(candidate["rating"])
+        self.assertIsNone(candidate["review_count"])
+        self.assertIsNone(candidate["average_price"])
+        self.assertGreaterEqual(candidate["metadata_quality_score"], 4)
+        self.assertIn("카카오 장소 링크 제공", candidate["metadata_quality_checks"])
 
     @patch.dict("os.environ", {"KAKAO_REST_API_KEY": ""})
     def test_kakao_local_search_reports_missing_key_as_observation(self) -> None:
@@ -699,6 +759,24 @@ class PublicReflectionTests(unittest.TestCase):
         self.assertEqual([item["restaurant_id"] for item in recommendations], ["tourapi:1", "tourapi:3"])
         self.assertIn("TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아", reflection)
 
+    def test_reflect_public_recommendations_does_not_pad_unmatched_food_type(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="일본식라면",
+            limit=3,
+            extracted_conditions=["지역=전주 객사", "음식종류=일본식라면"],
+        )
+        ranked = [
+            {"restaurant_id": "kakao:1", "name": "라멘집", "cuisine": "일본식라면", "source": "Kakao Local API"},
+            {"restaurant_id": "kakao:2", "name": "한식집", "cuisine": "한식", "source": "Kakao Local API"},
+        ]
+
+        recommendations, reflection = reflect_public_recommendations(ranked, parsed)
+
+        self.assertEqual([item["restaurant_id"] for item in recommendations], ["kakao:1"])
+        self.assertIn("일본식라면 의도는 엄격히 유지했습니다", reflection)
+        self.assertNotIn("대체 후보를 보완", reflection)
+
     def test_public_final_answer_shows_requested_weather_before_actual_weather(self) -> None:
         parsed = ParsedRequest(
             location="전주 웨리단길",
@@ -749,6 +827,9 @@ class PublicReflectionTests(unittest.TestCase):
                     "distance_reference": "객사",
                     "operation": {},
                     "score_reasons": ["빵집 조건 일치"],
+                    "metadata_quality_score": 5,
+                    "metadata_quality_checks": ["카카오 장소 링크 제공", "카카오 세부 카테고리 제공", "전주 주소 확인", "기준 위치와 거리 확인", "요청 업종 직접 일치"],
+                    "place_url": "https://place.map.kakao.com/1",
                 }
             ],
             "Kakao Local API 검토 완료",
@@ -762,7 +843,9 @@ class PublicReflectionTests(unittest.TestCase):
         self.assertNotIn("최대가격대", applied_line)
         self.assertNotIn("리뷰가 좋은 곳", preference_line)
         self.assertIn("미적용 조건:", answer)
-        self.assertIn("공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아", answer)
+        self.assertIn("공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 해당 수치 자체는 직접 필터링하지 않았고", answer)
+        self.assertIn("공식 메타데이터 검증: 5점", answer)
+        self.assertIn("장소 링크: https://place.map.kakao.com/1", answer)
 
 
 if __name__ == "__main__":

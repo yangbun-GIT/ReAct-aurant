@@ -574,11 +574,12 @@ def _standardize_restaurant(
 
 
 def _infer_kakao_cuisine(document: dict[str, Any], requested_keyword: str | None = None) -> str:
+    category_name = str(document.get("category_name") or "")
     blob = " ".join(
         str(value)
         for value in [
             document.get("place_name"),
-            document.get("category_name"),
+            category_name,
             document.get("category_group_name"),
         ]
         if value
@@ -589,6 +590,9 @@ def _infer_kakao_cuisine(document: dict[str, Any], requested_keyword: str | None
         return "바"
     if _has_bar_place_signal(blob):
         return "술집"
+    category_leaf = _kakao_food_category_leaf(category_name)
+    if category_leaf:
+        return category_leaf
     for cuisine, keywords in KAKAO_CATEGORY_CUISINE_RULES:
         if any(keyword in blob for keyword in keywords):
             return cuisine
@@ -596,6 +600,18 @@ def _infer_kakao_cuisine(document: dict[str, Any], requested_keyword: str | None
         if any(keyword in blob for keyword in keywords):
             return cuisine
     return document.get("category_group_name") or "음식점"
+
+
+def _kakao_food_category_leaf(category_name: str | None) -> str | None:
+    if not category_name or "음식점" not in category_name:
+        return None
+    parts = [part.strip() for part in str(category_name).split(">") if part.strip()]
+    if not parts:
+        return None
+    leaf = parts[-1].strip()
+    if not leaf or leaf == "음식점":
+        return None
+    return re.sub(r"\s+", " ", leaf)
 
 
 def _standardize_kakao_place(
@@ -653,6 +669,23 @@ def _standardize_kakao_place(
         "recommendation_reason": "Kakao Local API 장소 검색 결과의 위치, 카테고리, 거리 정보를 반영했습니다.",
         "source_note": "Kakao Local API 공식 응답은 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하며 평점/리뷰/가격대는 제공하지 않습니다. 장소 URL에서 사용자가 직접 추가 후기를 확인할 수 있습니다.",
     }
+
+
+def _kakao_metadata_quality(restaurant: dict[str, Any], cuisine: str | None = None) -> tuple[int, list[str]]:
+    checks: list[str] = []
+    if restaurant.get("place_url"):
+        checks.append("카카오 장소 링크 제공")
+    if restaurant.get("category_codes", {}).get("cat3"):
+        checks.append("카카오 세부 카테고리 제공")
+    if restaurant.get("address"):
+        checks.append("전주 주소 확인")
+    if restaurant.get("distance_m") is not None:
+        checks.append("기준 위치와 거리 확인")
+    if restaurant.get("phone"):
+        checks.append("전화번호 제공")
+    if cuisine and _matches_food_query(restaurant, cuisine):
+        checks.append("요청 업종 직접 일치")
+    return len(checks), checks
 
 
 def _text_blob(restaurant: dict[str, Any]) -> str:
@@ -800,6 +833,13 @@ def _score_public_restaurant(
         completeness += 1
     score += completeness * 2
     reasons.append(f"상세정보 {completeness}개 확보")
+
+    if restaurant.get("source") == "Kakao Local API":
+        metadata_score = int(restaurant.get("metadata_quality_score") or 0)
+        metadata_checks = restaurant.get("metadata_quality_checks") or []
+        if metadata_score:
+            score += min(10, metadata_score * 2)
+            reasons.append(f"공식 메타데이터 검증 {metadata_score}점: {', '.join(metadata_checks[:4])}")
 
     desired_cuisine = ranking_policy.get("cuisine")
     strict_food_requested = bool(desired_cuisine and str(desired_cuisine) in STRICT_FOOD_QUERIES)
@@ -1084,6 +1124,9 @@ def search_kakao_local_places(
     area: str = "전주",
     keyword: str | None = None,
     cuisine: str | None = None,
+    max_price_level: int | None = None,
+    min_rating: float | None = None,
+    min_review_count: int | None = None,
     max_distance_m: int | None = None,
     near_gaeksa: bool = False,
     limit: int = 10,
@@ -1160,8 +1203,17 @@ def search_kakao_local_places(
     if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페", "막걸리", "전집", "파전", "해물파전"}:
         places = [place for place in places if _matches_food_query(place, cuisine)]
 
+    metric_conditions_requested = any(value is not None for value in [max_price_level, min_rating, min_review_count])
+    for place in places:
+        quality_score, quality_checks = _kakao_metadata_quality(place, cuisine)
+        place["metadata_quality_score"] = quality_score
+        place["metadata_quality_checks"] = quality_checks
+    if metric_conditions_requested:
+        places = [place for place in places if int(place.get("metadata_quality_score") or 0) >= 4]
+
     places.sort(
         key=lambda place: (
+            -int(place.get("metadata_quality_score") or 0),
             place.get("distance_m") is None,
             int(place.get("distance_m") if place.get("distance_m") is not None else 999999),
             place.get("name") or "",
@@ -1175,6 +1227,9 @@ def search_kakao_local_places(
                 "area": area,
                 "keyword": keyword,
                 "cuisine": cuisine,
+                "max_price_level": max_price_level,
+                "min_rating": min_rating,
+                "min_review_count": min_review_count,
                 "max_distance_m": max_distance_m,
                 "target_area": search_area["name"],
                 "radius": radius,
@@ -1191,6 +1246,9 @@ def search_kakao_local_places(
             "area": area,
             "keyword": keyword,
             "cuisine": cuisine,
+            "max_price_level": max_price_level,
+            "min_rating": min_rating,
+            "min_review_count": min_review_count,
             "max_distance_m": max_distance_m,
             "target_area": search_area["name"],
             "radius": radius,
@@ -1198,7 +1256,12 @@ def search_kakao_local_places(
             "location_resolution": search_area.get("resolution_source"),
         },
         "unavailable_filters": ["rating", "review_count", "price_level"],
-        "data_limitations": "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 거리, 주소로만 보강 검색합니다. 장소 URL은 추가 후기 확인용으로 제공합니다.",
+        "metric_proxy_policy": (
+            "평점/리뷰 수/가격대는 Kakao Local API 공식 응답에 없어 직접 필터링하지 않고, 장소 링크·세부 카테고리·주소·거리·전화번호·업종 일치 기반 공식 메타데이터 검증 점수를 최소 4점 이상으로 적용했습니다."
+            if metric_conditions_requested
+            else None
+        ),
+        "data_limitations": "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않습니다. 해당 수치는 생성하지 않고 장소명, 세부 카테고리, 주소, 거리, 전화번호, 장소 URL의 공식 메타데이터 검증으로 보완합니다.",
         "count": len(places[: max(1, limit)]),
         "candidates": places[: max(1, limit)],
         "message": (

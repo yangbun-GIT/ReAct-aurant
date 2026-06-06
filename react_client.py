@@ -42,15 +42,22 @@ FOOD_QUERY_TERMS = [
     "스시",
     "돈카츠",
     "돈까스",
+    "일본식라면",
     "라멘",
     "우동",
     "소바",
+    "사시미",
+    "참치",
+    "오마카세",
     "이자카야",
     "일식",
     "마라탕",
     "훠궈",
+    "양꼬치",
+    "마라샹궈",
     "짬뽕",
     "짜장",
+    "탕수육",
     "중식",
     "파스타",
     "이탈리안",
@@ -62,14 +69,23 @@ FOOD_QUERY_TERMS = [
     "타코",
     "피자",
     "스테이크",
+    "브런치카페",
     "브런치",
+    "버거",
+    "햄버거",
+    "샐러드",
     "리조또",
     "양식",
     "쌀국수",
+    "베트남음식",
+    "반미",
+    "분짜",
     "베트남",
     "태국",
+    "태국음식",
     "팟타이",
     "인도",
+    "인도음식",
     "커리",
     "카레",
     "아시아",
@@ -81,18 +97,27 @@ FOOD_QUERY_TERMS = [
     "디저트 카페",
     "카페",
     "디저트",
+    "빙수",
+    "아이스크림",
     "베이커리",
     "빵",
     "케이크",
+    "제과",
+    "제빵",
     "고기",
     "삼겹살",
     "갈비",
+    "장어",
     "곱창",
     "막창",
     "족발",
     "보쌈",
     "치킨",
+    "닭갈비",
     "회",
+    "횟집",
+    "생선회",
+    "조개",
     "해산물",
     "술집",
     "막걸리",
@@ -962,7 +987,7 @@ def reflect_public_recommendations(
 ) -> tuple[list[dict[str, Any]], str]:
     accepted: list[dict[str, Any]] = []
     warnings: list[str] = []
-    strict_food = bool(parsed.cuisine and parsed.cuisine in STRICT_PUBLIC_CUISINE_TERMS)
+    strict_food = bool(parsed.cuisine)
     source_names = {str(candidate.get("source")) for candidate in ranked_candidates if candidate.get("source")}
     uses_kakao = "Kakao Local API" in source_names
 
@@ -1055,7 +1080,12 @@ def _public_value(value: Any, fallback: str = "정보 없음") -> str:
     return text if text else fallback
 
 
-def _split_supported_public_conditions(parsed: ParsedRequest, source_label: str) -> tuple[list[str], list[str]]:
+def _split_supported_public_conditions(
+    parsed: ParsedRequest,
+    source_label: str,
+    *,
+    kakao_metric_proxy: bool = False,
+) -> tuple[list[str], list[str]]:
     unsupported_prefixes = ("최대가격대=", "최소평점=", "최소리뷰수=")
     supported: list[str] = []
     unsupported: list[str] = []
@@ -1065,9 +1095,14 @@ def _split_supported_public_conditions(parsed: ParsedRequest, source_label: str)
         else:
             supported.append(condition)
     if unsupported:
-        unsupported.append(
-            f"{source_label} 공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 필터나 점수에 반영하지 않았습니다."
-        )
+        if kakao_metric_proxy:
+            unsupported.append(
+                f"{source_label} 공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 해당 수치 자체는 직접 필터링하지 않았고, 장소 링크·세부 카테고리·주소·거리·전화번호 기반 공식 메타데이터 검증으로 보완했습니다."
+            )
+        else:
+            unsupported.append(
+                f"{source_label} 공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 필터나 점수에 반영하지 않았습니다."
+            )
     return supported, unsupported
 
 
@@ -1083,13 +1118,19 @@ def build_public_final_answer(
     source_names = {str(item.get("source")) for item in recommendations if item.get("source")}
     if data_source_label == "Kakao Local API" or "Kakao Local API" in source_names:
         source_label = "Kakao Local API"
-        limitation = "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 주소, 거리 중심으로 보강 검색했습니다. 장소 링크는 추가 후기 확인용으로 제공합니다."
+        limitation = "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않습니다. 대신 장소명, 세부 카테고리, 주소, 거리, 전화번호, 장소 링크를 검증 가능한 추천 근거로 사용하고 장소 링크는 추가 후기 확인용으로 제공합니다."
         missing_metric_label = "Kakao Local 미제공"
+        kakao_metric_proxy = any(item.get("metadata_quality_score") for item in recommendations)
     else:
         source_label = "한국관광공사 TourAPI KorService2"
         limitation = "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다."
         missing_metric_label = "TourAPI 미제공"
-    supported_conditions, unsupported_conditions = _split_supported_public_conditions(parsed, source_label)
+        kakao_metric_proxy = False
+    supported_conditions, unsupported_conditions = _split_supported_public_conditions(
+        parsed,
+        source_label,
+        kakao_metric_proxy=kakao_metric_proxy,
+    )
     profile_notes = list(profile.get("notes", []))
     if unsupported_conditions:
         profile_notes = [
@@ -1097,7 +1138,10 @@ def build_public_final_answer(
             for note in profile_notes
             if not any(keyword in note for keyword in ["비싸", "가격", "리뷰", "평점"])
         ]
-        profile_notes.append("가격/평점/리뷰 선호는 공식 API 미제공으로 반영하지 않고, 위치·업종·거리·날씨 조건을 우선했습니다.")
+        if kakao_metric_proxy:
+            profile_notes.append("가격/평점/리뷰 선호 수치는 공식 API 미제공으로 생성하지 않고, 카카오 장소 링크·세부 카테고리·주소·거리·전화번호 검증을 보완 기준으로 적용했습니다.")
+        else:
+            profile_notes.append("가격/평점/리뷰 선호는 공식 API 미제공으로 반영하지 않고, 위치·업종·거리·날씨 조건을 우선했습니다.")
 
     lines = [
         "최종 추천 결과",
@@ -1134,6 +1178,8 @@ def build_public_final_answer(
         review_text = _public_value(restaurant.get("review_count"), missing_metric_label)
         price_text = _public_value(restaurant.get("average_price"), missing_metric_label)
         menu_fallback = "Kakao Local 공식 API 미제공" if restaurant.get("source") == "Kakao Local API" else "TourAPI 상세 메뉴 정보 없음"
+        metadata_score = restaurant.get("metadata_quality_score")
+        metadata_checks = restaurant.get("metadata_quality_checks") or []
         lines.extend(
             [
                 f"{index}. {restaurant['name']} ({restaurant.get('cuisine') or '음식점'})",
@@ -1147,6 +1193,9 @@ def build_public_final_answer(
                 f"- 점수 근거: {score_reasons}",
             ]
         )
+        if metadata_score:
+            checks_text = ", ".join(metadata_checks[:6]) if metadata_checks else "카카오 공식 응답 필드 확인"
+            lines.append(f"- 공식 메타데이터 검증: {metadata_score}점 ({checks_text})")
         if restaurant.get("place_url"):
             lines.append(f"- 장소 링크: {restaurant.get('place_url')}")
         lines.append("")
@@ -1612,6 +1661,9 @@ async def run_agent(
                         tool_input={
                             "area": public_area,
                             "cuisine": parsed.cuisine,
+                            "max_price_level": parsed.max_price_level,
+                            "min_rating": parsed.min_rating,
+                            "min_review_count": parsed.min_review_count,
                             "max_distance_m": parsed.max_distance_m,
                             "near_gaeksa": near_gaeksa,
                             "limit": 8,
@@ -1809,6 +1861,9 @@ async def run_agent(
                                 tool_input={
                                     "area": public_area,
                                     "cuisine": parsed.cuisine,
+                                    "max_price_level": parsed.max_price_level,
+                                    "min_rating": parsed.min_rating,
+                                    "min_review_count": parsed.min_review_count,
                                     "max_distance_m": parsed.max_distance_m,
                                     "near_gaeksa": near_gaeksa,
                                     "limit": 8,

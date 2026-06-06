@@ -23,7 +23,7 @@
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
-- TourAPI와 Kakao Local API는 평점, 리뷰 수, 가격대를 공식 응답으로 제공하지 않으므로, 공공데이터/Kakao 경로의 최종 답변에서는 해당 조건을 `적용 조건`에 넣지 않고 `미적용 조건`으로 분리합니다. 추천 점수에는 주소, 좌표, 거리, 카테고리, 상세정보 충실도, 음식 종류 일치도만 사용하고 임의 평점/리뷰/가격을 생성하지 않습니다.
+- TourAPI와 Kakao Local API는 평점, 리뷰 수, 가격대를 공식 응답으로 제공하지 않으므로, 공공데이터/Kakao 경로의 최종 답변에서는 해당 조건을 `적용 조건`에 넣지 않고 `미적용 조건`으로 분리합니다. Kakao 경로는 임의 평점/리뷰/가격을 생성하지 않고, 장소 링크·세부 카테고리·주소·거리·전화번호·업종 일치 여부를 `공식 메타데이터 검증` 점수로 보완합니다.
 - 전주 세부 위치는 `jeonju_gazetteer.py`의 전주 지명 사전으로 먼저 해석합니다. 이 사전은 전주시 공식 행정구역 자료의 완산구 19개 행정동/46개 법정동, 덕진구 16개 행정동/37개 법정동과 주요 생활권 별칭을 반영합니다. `객사`는 객리단길 중심 상권으로 좁게 해석하고, `웨리단길`, `한옥마을`과 별도 좌표/반경으로 구분합니다. Kakao 우선 모드에서 사전에 없는 전주 지명은 Kakao Local API 키워드 검색으로 좌표를 찾아 반경 검색을 시도합니다.
 - 음식 종류는 한식/일식/양식/카페 같은 큰 분류뿐 아니라 파스타, 소바, 마라탕, 쌀국수, 베이커리, 곱창 등 구체 음식명도 검색어로 처리합니다.
 - 비/눈/더움/추움/맑음 같은 날씨 조건은 사용자가 입력한 조건을 실제 조회 날씨보다 우선합니다. 비 오는 날은 파전, 막걸리, 따뜻한 국물, 가까운 실내 좌석처럼 보편적인 기대를 힌트로 반영하고, 최종 답변에도 그 근거를 표시합니다.
@@ -221,7 +221,7 @@ docker compose up --build
 `public_data_server.py`
 
 - `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다. 술집 의도는 막걸리, 전집, 포차, 호프, 이자카야 등 직접 관련 키워드로 확장하되 일반 식당으로 무리하게 채우지 않습니다.
-- `search_kakao_local_places(area, keyword, cuisine, max_distance_m, near_gaeksa, limit)`: `KAKAO_REST_API_KEY`가 있을 때 Kakao Local API 키워드 검색으로 장소 후보를 조회합니다. Kakao 우선 모드에서는 이 도구가 1차 검색 도구이며, 사전에 없는 전주 세부 위치는 Kakao Local API 키워드 검색으로 좌표를 해석합니다. 키가 없으면 error Observation을 반환해 Agent가 데이터 한계를 설명하도록 합니다.
+- `search_kakao_local_places(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit)`: `KAKAO_REST_API_KEY`가 있을 때 Kakao Local API 키워드 검색으로 장소 후보를 조회합니다. Kakao 우선 모드에서는 이 도구가 1차 검색 도구이며, 사전에 없는 전주 세부 위치는 Kakao Local API 키워드 검색으로 좌표를 해석합니다. Kakao의 `category_name`은 `음식점 > ... > 세부항목`의 마지막 항목을 보존해 일본식라면, 양꼬치, 브런치카페 같은 세부 업종을 넓은 대분류로 뭉개지 않습니다. 키가 없으면 error Observation을 반환해 Agent가 데이터 한계를 설명하도록 합니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.
@@ -353,9 +353,9 @@ Kakao Local API:
 - 인증: `KAKAO_REST_API_KEY`
 - 호출 도구: `search_kakao_local_places`
 - 제공 정보: 장소명, 주소, 전화번호, 카테고리, 거리, 장소 URL
-- 미제공 정보: 평점, 리뷰 수, 가격대. 해당 값은 임의 생성하지 않고 최종 답변의 데이터 한계로 표시합니다.
+- 미제공 정보: 평점, 리뷰 수, 가격대. 해당 값은 임의 생성하지 않고 최종 답변의 데이터 한계로 표시합니다. Kakao Local을 사용하는 경우에는 장소 링크, 세부 카테고리, 주소, 거리, 전화번호, 업종 일치 여부를 공식 메타데이터 검증 점수로 보완해 후보 품질을 비교합니다.
 
-Naver Search API와 Google Places API는 현재 기본 실행에서 제외했습니다. Naver Search API는 지역 검색 결과를 `comment` 정렬로 받을 수 있어 리뷰 언급량 보조 신호로는 쓸 수 있지만, 공식 응답에 평점/방문자 리뷰 수/가격대가 없습니다. Google Places API는 `rating`, `userRatingCount`, `priceLevel`을 제공하므로 평점/리뷰/가격을 실제 추천 기준으로 반영하려면 가장 직접적인 공식 대안입니다. 다만 Google Places는 결제 설정과 SKU별 무료 사용량/초과 과금 관리가 필요하므로, 비용 0원 제출 조건에서는 기본 비활성으로 둡니다.
+Naver Search API와 Google Places API는 현재 기본 실행에서 제외했습니다. Naver Search API는 지역 검색 결과를 `comment` 정렬로 받을 수 있어 리뷰 언급량 보조 신호로는 쓸 수 있지만, 공식 응답에 평점/방문자 리뷰 수/가격대가 없습니다. Google Places API는 `rating`, `userRatingCount`, `priceLevel`을 제공하므로 평점/리뷰/가격을 실제 추천 기준으로 반영하려면 가장 직접적인 공식 대안입니다. 다만 Google Places는 결제 설정과 SKU별 무료 사용량/초과 과금 관리가 필요하므로, 비용 0원 제출 조건에서는 기본 비활성으로 둡니다. Kakao 장소 URL을 LLM에게 추정시키는 방식은 공식 Observation이 아니므로 사용하지 않습니다.
 
 ## 테스트
 
