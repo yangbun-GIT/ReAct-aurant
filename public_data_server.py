@@ -688,6 +688,74 @@ def _kakao_metadata_quality(restaurant: dict[str, Any], cuisine: str | None = No
     return len(checks), checks
 
 
+def _visible_text_from_html(html_text: str) -> str:
+    text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", html_text)
+    text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _metric_snippets(text: str, window: int = 80) -> list[str]:
+    snippets: list[str] = []
+    for match in re.finditer(r"평점|별점|리뷰|후기|가격대|가격|rating|review|score|comment|price", text, flags=re.IGNORECASE):
+        start = max(0, match.start() - window)
+        end = min(len(text), match.end() + window)
+        snippet = text[start:end].strip()
+        if snippet and snippet not in snippets:
+            snippets.append(snippet)
+        if len(snippets) >= 12:
+            break
+    return snippets
+
+
+def _parse_rating_from_text(text: str) -> float | None:
+    patterns = [
+        r"(?:평점|별점)\s*[:：]?\s*([0-5](?:\.\d)?)",
+        r"([0-5](?:\.\d)?)\s*/\s*5",
+        r"(?:rating|score)\D{0,12}([0-5](?:\.\d)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = _float_or_none(match.group(1))
+            if value is not None and 0 <= value <= 5:
+                return value
+    return None
+
+
+def _parse_review_count_from_text(text: str) -> int | None:
+    patterns = [
+        r"(?:리뷰|후기|review|comment)\D{0,12}([0-9][0-9,]*)\s*(?:개|건)?",
+        r"([0-9][0-9,]*)\s*(?:개의\s*)?(?:리뷰|후기)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+    return None
+
+
+def _parse_price_level_from_text(text: str) -> int | None:
+    price_patterns = [
+        r"(?:가격대|가격|price)\D{0,20}([₩￦]{1,4})",
+        r"([₩￦]{1,4})\D{0,20}(?:가격대|가격|price)",
+    ]
+    for pattern in price_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            symbols = re.findall(r"[₩￦]", match.group(0))
+            return min(4, max(1, len(symbols)))
+    if re.search(r"저렴|가성비|부담\s*없", text):
+        return 1
+    if re.search(r"비싼|고급|파인다이닝", text):
+        return 4
+    return None
+
+
 def _text_blob(restaurant: dict[str, Any]) -> str:
     return " ".join(
         str(value)
@@ -900,12 +968,43 @@ def _score_public_restaurant(
             reasons.append(f"요청 거리 {int(max_distance_m)}m 초과")
 
     source_label = "Kakao Local" if restaurant.get("source") == "Kakao Local API" else "TourAPI"
-    if ranking_policy.get("min_rating") is not None and restaurant.get("rating") is None:
-        reasons.append(f"{source_label} 평점 미제공")
-    if ranking_policy.get("min_review_count") is not None and restaurant.get("review_count") is None:
-        reasons.append(f"{source_label} 리뷰 수 미제공")
-    if ranking_policy.get("max_price_level") is not None and restaurant.get("average_price") is None:
-        reasons.append(f"{source_label} 가격대 미제공")
+    if ranking_policy.get("min_rating") is not None:
+        rating = _float_or_none(restaurant.get("rating"))
+        if rating is None:
+            reasons.append(f"{source_label} 평점 미제공")
+        elif rating >= float(ranking_policy["min_rating"]):
+            score += 8
+            reasons.append(f"장소 링크 평점 조건 충족: {rating}")
+        else:
+            score -= 40
+            reasons.append(f"장소 링크 평점 조건 미달: {rating}")
+    if ranking_policy.get("min_review_count") is not None:
+        try:
+            review_count = int(restaurant["review_count"]) if restaurant.get("review_count") is not None else None
+        except (TypeError, ValueError):
+            review_count = None
+        if review_count is None:
+            reasons.append(f"{source_label} 리뷰 수 미제공")
+        elif review_count >= int(ranking_policy["min_review_count"]):
+            score += 8
+            reasons.append(f"장소 링크 리뷰 수 조건 충족: {review_count}개")
+        else:
+            score -= 35
+            reasons.append(f"장소 링크 리뷰 수 조건 미달: {review_count}개")
+    if ranking_policy.get("max_price_level") is not None:
+        price_level = restaurant.get("price_level")
+        try:
+            price_level_int = int(price_level) if price_level is not None else None
+        except (TypeError, ValueError):
+            price_level_int = None
+        if price_level_int is None:
+            reasons.append(f"{source_label} 가격대 미제공")
+        elif price_level_int <= int(ranking_policy["max_price_level"]):
+            score += 6
+            reasons.append(f"장소 링크 가격대 조건 충족: {price_level_int}")
+        else:
+            score -= 35
+            reasons.append(f"장소 링크 가격대 조건 초과: {price_level_int}")
 
     if not restaurant.get("address"):
         score -= 5
@@ -1269,6 +1368,93 @@ def search_kakao_local_places(
             if places
             else "Kakao Local API에서 조건에 맞는 장소 후보를 확보하지 못했습니다."
         ),
+    }
+
+
+@mcp.tool()
+def extract_kakao_place_metrics(
+    place_url: str,
+    place_name: str | None = None,
+    min_rating: float | None = None,
+    min_review_count: int | None = None,
+    max_price_level: int | None = None,
+) -> dict[str, Any]:
+    """Kakao 장소 링크 페이지에서 평점/리뷰/가격대 후보 텍스트를 추출합니다. 실패해도 기존 추천 로직으로 fallback할 수 있는 Observation을 반환합니다."""
+    url = (place_url or "").strip()
+    if not url:
+        return {
+            "status": "error",
+            "source": "Kakao place page",
+            "place_name": place_name,
+            "place_url": place_url,
+            "message": "place_url이 비어 있어 장소 페이지 지표 보강을 수행하지 않았습니다.",
+            "fallback_policy": "기존 Kakao Local 공식 메타데이터 검증으로 fallback합니다.",
+        }
+    if not re.match(r"^https?://place\.map\.kakao\.com/[0-9A-Za-z_-]+", url):
+        return {
+            "status": "error",
+            "source": "Kakao place page",
+            "place_name": place_name,
+            "place_url": place_url,
+            "message": "Kakao 장소 링크 형식이 아니어서 지표 보강을 수행하지 않았습니다.",
+            "fallback_policy": "기존 Kakao Local 공식 메타데이터 검증으로 fallback합니다.",
+        }
+
+    secure_url = re.sub(r"^http://", "https://", url)
+    try:
+        response = httpx.get(
+            secure_url,
+            follow_redirects=True,
+            timeout=8,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ReAct-aurant/1.0",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.5,en;q=0.3",
+            },
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "source": "Kakao place page",
+            "place_name": place_name,
+            "place_url": secure_url,
+            "message": f"Kakao 장소 페이지를 가져오지 못했습니다: {exc}",
+            "fallback_policy": "기존 Kakao Local 공식 메타데이터 검증으로 fallback합니다.",
+        }
+
+    visible_text = _visible_text_from_html(response.text)
+    snippets = _metric_snippets(visible_text)
+    evidence_text = "\n".join(snippets)[:3500]
+    rating = _parse_rating_from_text(evidence_text)
+    review_count = _parse_review_count_from_text(evidence_text)
+    price_level = _parse_price_level_from_text(evidence_text)
+    observed = any(value is not None for value in [rating, review_count, price_level])
+
+    deterministic_meets: dict[str, bool | None] = {
+        "rating": None if rating is None or min_rating is None else rating >= float(min_rating),
+        "review_count": None if review_count is None or min_review_count is None else review_count >= int(min_review_count),
+        "price_level": None if price_level is None or max_price_level is None else price_level <= int(max_price_level),
+    }
+
+    return {
+        "status": "ok",
+        "source": "Kakao place page",
+        "place_name": place_name,
+        "place_url": secure_url,
+        "http_status": response.status_code,
+        "metrics_status": "observed" if observed else "not_found",
+        "rating": rating,
+        "review_count": review_count,
+        "price_level": price_level,
+        "condition_checks": deterministic_meets,
+        "evidence_text": evidence_text,
+        "evidence_snippets": snippets,
+        "message": (
+            "Kakao 장소 페이지에서 지표 후보를 추출했습니다."
+            if observed
+            else "Kakao 장소 페이지 정적 HTML에서 평점/리뷰 수/가격대 지표를 찾지 못했습니다."
+        ),
+        "fallback_policy": "지표가 없거나 불확실하면 기존 Kakao Local 공식 메타데이터 검증으로 fallback합니다.",
     }
 
 

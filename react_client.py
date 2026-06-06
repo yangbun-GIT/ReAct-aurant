@@ -408,6 +408,8 @@ def _summarize_payload(tool_name: str, payload: dict[str, Any]) -> str:
     if tool_name == "get_tourapi_restaurant_detail":
         restaurant = payload.get("restaurant") or {}
         return f"{restaurant.get('name', '공공데이터 음식점')} TourAPI 상세 정보를 수신했습니다."
+    if tool_name == "extract_kakao_place_metrics":
+        return f"{payload.get('place_name', 'Kakao 장소')} 장소 링크 지표 보강 결과: {payload.get('metrics_status', payload.get('status', 'unknown'))}"
     return f"{tool_name} 결과를 수신했습니다."
 
 
@@ -1196,6 +1198,11 @@ def build_public_final_answer(
         if metadata_score:
             checks_text = ", ".join(metadata_checks[:6]) if metadata_checks else "카카오 공식 응답 필드 확인"
             lines.append(f"- 공식 메타데이터 검증: {metadata_score}점 ({checks_text})")
+        metric_judgment = restaurant.get("place_metric_judgment") or {}
+        if metric_judgment:
+            metric_status = metric_judgment.get("status") or "unknown"
+            metric_reason = metric_judgment.get("reason") or restaurant.get("metric_enrichment_note") or "장소 링크 지표 보강 결과"
+            lines.append(f"- 장소 링크 지표 보강: {metric_status}, {metric_reason}")
         if restaurant.get("place_url"):
             lines.append(f"- 장소 링크: {restaurant.get('place_url')}")
         lines.append("")
@@ -1323,6 +1330,8 @@ async def run_llm_reflection(
             "score_reasons": item.get("score_reasons", []),
             "rating": item.get("rating"),
             "review_count": item.get("review_count"),
+            "price_level": item.get("price_level"),
+            "place_metric_judgment": item.get("place_metric_judgment"),
         }
         for item in recommendations
     ]
@@ -1387,6 +1396,7 @@ async def run_llm_final_answer(
         "평점/리뷰/가격대, 메뉴, 영업정보, 추천 이유, 점수 근거, Reflection, 데이터 한계를 변경하거나 삭제하지 말고 "
         "한국어로 자연스럽게 정리한다. 각 식당에는 반드시 추천 이유와 점수 근거를 포함한다. "
         "초안에 '평점/리뷰/가격대' 줄이 있으면 각 식당별로 반드시 그대로 보존한다. "
+        "초안에 '장소 링크 지표 보강' 줄이 있으면 각 식당별로 반드시 그대로 보존한다. "
         "초안에 '예외 처리 피드백' 섹션이 있으면 삭제하지 말고 그대로 보존한다. "
         "답변 마지막에는 반드시 'Reflection:'으로 시작하는 검토 문장을 포함한다. "
         "초안에 없는 '유명', '인기', '맛있다', '평이 좋다' 같은 평가 표현을 새로 추가하지 않는다. "
@@ -1407,6 +1417,9 @@ async def run_llm_final_answer(
         final_answer = final_answer.strip() or draft_answer
         draft_required_count = draft_answer.count("- 평점/리뷰/가격대")
         if draft_required_count and final_answer.count("- 평점/리뷰/가격대") < draft_required_count:
+            final_answer = draft_answer
+        draft_metric_enrichment_count = draft_answer.count("- 장소 링크 지표 보강")
+        if draft_metric_enrichment_count and final_answer.count("- 장소 링크 지표 보강") < draft_metric_enrichment_count:
             final_answer = draft_answer
         trace.write(
             agent_name="LLM Final Answer Agent",
@@ -1432,11 +1445,225 @@ async def run_llm_final_answer(
         return draft_answer
 
 
+def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest) -> dict[str, Any]:
+    rating = observation.get("rating")
+    review_count = observation.get("review_count")
+    price_level = observation.get("price_level")
+    checks = observation.get("condition_checks") or {}
+    failed: list[str] = []
+    if checks.get("rating") is False:
+        failed.append(f"평점 {rating} < 최소 {parsed.min_rating}")
+    if checks.get("review_count") is False:
+        failed.append(f"리뷰 수 {review_count} < 최소 {parsed.min_review_count}")
+    if checks.get("price_level") is False:
+        failed.append(f"가격대 {price_level} > 최대 {parsed.max_price_level}")
+    observed = any(value is not None for value in [rating, review_count, price_level])
+    return {
+        "place_url": observation.get("place_url"),
+        "place_name": observation.get("place_name"),
+        "status": "observed" if observed else "unknown",
+        "rating": rating,
+        "review_count": review_count,
+        "price_level": price_level,
+        "meets_conditions": False if failed else (True if observed else None),
+        "reason": "; ".join(failed) if failed else ("관측된 지표는 요청 조건을 위반하지 않습니다." if observed else "장소 페이지에서 지표를 확인하지 못했습니다."),
+    }
+
+
+def _normalize_kakao_place_url(value: Any) -> str:
+    return re.sub(r"^http://", "https://", str(value or "").strip())
+
+
+async def run_llm_kakao_metric_judgment(
+    *,
+    metric_observations: list[dict[str, Any]],
+    parsed: ParsedRequest,
+    trace: TraceLogger,
+    messages_count: int,
+    use_llm: bool,
+) -> list[dict[str, Any]]:
+    fallback = [_observed_metric_judgment(observation, parsed) for observation in metric_observations]
+    if not should_use_llm(use_llm):
+        trace.write(
+            agent_name="Kakao Place Metric Judge",
+            pattern="Reflection Pattern",
+            thought_summary="LLM이 비활성화되어 장소 링크 지표 보강 결과를 규칙 기반으로만 판정합니다.",
+            observation={"llm_enabled": False, "judgments": fallback},
+            messages_count=messages_count,
+        )
+        return fallback
+
+    compact_observations = [
+        {
+            "place_name": item.get("place_name"),
+            "place_url": item.get("place_url"),
+            "metrics_status": item.get("metrics_status"),
+            "rating": item.get("rating"),
+            "review_count": item.get("review_count"),
+            "price_level": item.get("price_level"),
+            "evidence_text": item.get("evidence_text", "")[:1200],
+            "message": item.get("message"),
+        }
+        for item in metric_observations
+    ]
+    system_prompt = (
+        "너는 Kakao 장소 페이지 지표 검증 모듈이다. 제공된 evidence_text와 추출값에 명시된 정보만 사용한다. "
+        "증거에 없는 평점, 리뷰 수, 가격대는 절대 추정하지 말고 null로 둔다. "
+        "각 장소가 최소평점, 최소리뷰수, 최대가격대 조건을 만족하는지 JSON으로만 판단한다."
+    )
+    user_prompt = json.dumps(
+        {
+            "conditions": {
+                "min_rating": parsed.min_rating,
+                "min_review_count": parsed.min_review_count,
+                "max_price_level": parsed.max_price_level,
+            },
+            "observations": compact_observations,
+            "output_schema": [
+                {
+                    "place_url": "string",
+                    "place_name": "string",
+                    "status": "observed|unknown",
+                    "rating": "number|null",
+                    "review_count": "integer|null",
+                    "price_level": "integer|null",
+                    "meets_conditions": "boolean|null",
+                    "reason": "string",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    try:
+        content = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=900, temperature=0)
+        parsed_json = parse_llm_json(content)
+        judgments = parsed_json if isinstance(parsed_json, list) else parsed_json.get("judgments")
+        if not isinstance(judgments, list):
+            judgments = fallback
+        normalized: list[dict[str, Any]] = []
+        by_url = {_normalize_kakao_place_url(item.get("place_url")): item for item in metric_observations}
+        for judgment in judgments:
+            if not isinstance(judgment, dict):
+                continue
+            source_observation = by_url.get(_normalize_kakao_place_url(judgment.get("place_url"))) or {}
+            if source_observation.get("metrics_status") == "not_found":
+                normalized.append(_observed_metric_judgment(source_observation, parsed))
+                continue
+            normalized.append({**_observed_metric_judgment(source_observation, parsed), **judgment})
+        if not normalized:
+            normalized = fallback
+        trace.write(
+            agent_name="Kakao Place Metric Judge",
+            pattern="Reflection Pattern",
+            thought_summary="GPT가 장소 링크에서 추출된 지표 증거만 보고 평점/리뷰/가격대 조건 충족 여부를 판정했습니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "kakao_place_metric_judgment"},
+            observation={"judgments": normalized},
+            messages_count=messages_count,
+        )
+        return normalized
+    except Exception as exc:
+        trace.write(
+            agent_name="Kakao Place Metric Judge",
+            pattern="Reflection Pattern",
+            thought_summary="LLM 장소 지표 판정이 실패해 기존 Kakao 공식 메타데이터 검증으로 fallback합니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "kakao_place_metric_judgment"},
+            observation={"status": "error", "message": str(exc), "fallback_judgments": fallback},
+            messages_count=messages_count,
+        )
+        return fallback
+
+
+async def enrich_kakao_candidates_with_place_metrics(
+    *,
+    candidates: list[dict[str, Any]],
+    parsed: ParsedRequest,
+    public_client: MCPClient,
+    trace: TraceLogger,
+    messages: list[dict[str, str]],
+    use_llm: bool,
+    enabled: bool,
+    max_items: int = 8,
+) -> tuple[list[dict[str, Any]], str]:
+    if not enabled:
+        return candidates, "장소 링크 지표 보강은 비활성화되어 기존 Kakao Local 공식 메타데이터 검증을 사용했습니다."
+
+    metric_observations: list[dict[str, Any]] = []
+    for candidate in candidates[:max_items]:
+        place_url = candidate.get("place_url")
+        if not place_url:
+            continue
+        metric_observation = await public_client.call_tool(
+            ToolAction(
+                agent_name="Kakao Place Metric Extractor",
+                pattern="Tool Use Pattern",
+                tool_name="extract_kakao_place_metrics",
+                tool_input={
+                    "place_url": place_url,
+                    "place_name": candidate.get("name"),
+                    "min_rating": parsed.min_rating,
+                    "min_review_count": parsed.min_review_count,
+                    "max_price_level": parsed.max_price_level,
+                },
+                mcp_server="public_data_server.py",
+                thought_summary=f"장소 링크에서 {candidate.get('name', '후보')}의 평점/리뷰 수/가격대 지표 후보를 추출합니다.",
+            )
+        )
+        messages.append({"role": "tool", "content": f"Observation: {metric_observation.summary}"})
+        metric_observations.append(metric_observation.data)
+
+    if not metric_observations:
+        return candidates, "장소 링크 지표 보강을 시도할 URL이 없어 기존 Kakao Local 공식 메타데이터 검증으로 fallback했습니다."
+
+    judgments = await run_llm_kakao_metric_judgment(
+        metric_observations=metric_observations,
+        parsed=parsed,
+        trace=trace,
+        messages_count=len(messages),
+        use_llm=use_llm,
+    )
+    judgment_by_url = {_normalize_kakao_place_url(item.get("place_url")): item for item in judgments if item.get("place_url")}
+    enriched: list[dict[str, Any]] = []
+    excluded: list[str] = []
+    observed_count = 0
+    for candidate in candidates:
+        candidate = dict(candidate)
+        judgment = judgment_by_url.get(_normalize_kakao_place_url(candidate.get("place_url")))
+        if judgment:
+            candidate["place_metric_judgment"] = judgment
+            if judgment.get("status") == "observed":
+                observed_count += 1
+                if judgment.get("rating") is not None:
+                    candidate["rating"] = judgment.get("rating")
+                if judgment.get("review_count") is not None:
+                    candidate["review_count"] = judgment.get("review_count")
+                if judgment.get("price_level") is not None:
+                    candidate["price_level"] = judgment.get("price_level")
+                    candidate["average_price"] = f"가격대 {judgment.get('price_level')}"
+                reason = str(judgment.get("reason") or "장소 링크 지표 관측")
+                candidate.setdefault("score_reasons", [])
+                candidate["metric_enrichment_note"] = reason
+                if judgment.get("meets_conditions") is False:
+                    excluded.append(f"{candidate.get('name')}: {reason}")
+                    continue
+        enriched.append(candidate)
+
+    if observed_count == 0:
+        return enriched, "장소 링크 보강을 시도했지만 평점/리뷰 수/가격대 지표를 확인하지 못해 기존 Kakao Local 공식 메타데이터 검증으로 fallback했습니다."
+    if not enriched:
+        return [], f"장소 링크 지표 보강 결과 모든 후보가 요청 조건을 충족하지 못했습니다. 제외: {'; '.join(excluded[:5])}"
+    if excluded:
+        return enriched, f"장소 링크 지표 보강으로 조건 미달 후보를 제외했습니다. 제외: {'; '.join(excluded[:5])}"
+    return enriched, f"장소 링크 지표 보강으로 {observed_count}개 후보의 평점/리뷰 수/가격대 조건을 확인했습니다."
+
+
 async def run_agent(
     query: str,
     trace_path: Path | None,
     use_llm: bool,
     data_source: Literal["local", "public", "auto", "kakao"] = "auto",
+    enrich_kakao_place_metrics: bool = False,
 ) -> str:
     load_dotenv()
     trace = TraceLogger(trace_path)
@@ -1563,6 +1790,7 @@ async def run_agent(
                         tool
                         for tool in [
                             "search_kakao_local_places",
+                            "extract_kakao_place_metrics",
                             "search_tourapi_restaurants",
                             "get_tourapi_restaurant_detail",
                             "rank_tourapi_restaurants",
@@ -1682,13 +1910,25 @@ async def run_agent(
                 source_for_answer = "Kakao Local API"
 
                 if kakao_payload.get("status") == "ok" and kakao_payload.get("count", 0) > 0:
+                    kakao_candidates = kakao_payload.get("candidates", [])
+                    metric_reflection = ""
+                    if enrich_kakao_place_metrics:
+                        kakao_candidates, metric_reflection = await enrich_kakao_candidates_with_place_metrics(
+                            candidates=kakao_candidates,
+                            parsed=parsed,
+                            public_client=public_client,
+                            trace=trace,
+                            messages=messages,
+                            use_llm=use_llm,
+                            enabled=True,
+                        )
                     kakao_rank_observation = await public_client.call_tool(
                         ToolAction(
                             agent_name="Public Data Agent",
                             pattern="ReAct Pattern",
                             tool_name="rank_tourapi_restaurants",
                             tool_input={
-                                "candidates": kakao_payload.get("candidates", []),
+                                "candidates": kakao_candidates,
                                 "ranking_policy": build_ranking_policy(parsed, weather_observation.data, profile_observation.data),
                             },
                             mcp_server="public_data_server.py",
@@ -1701,6 +1941,8 @@ async def run_agent(
                     if kakao_ranked:
                         recommendations, deterministic_reflection = reflect_public_recommendations(kakao_ranked, parsed)
                         deterministic_reflection = "Kakao Local API 우선 모드로 장소 후보를 조회했습니다. " + deterministic_reflection
+                        if metric_reflection:
+                            deterministic_reflection += " " + metric_reflection
                 else:
                     kakao_issue = {
                         "type": "kakao_local_unavailable",
@@ -1875,13 +2117,25 @@ async def run_agent(
                         messages.append({"role": "tool", "content": f"Observation: {kakao_observation.summary}"})
                         kakao_payload = kakao_observation.data
                         if kakao_payload.get("status") == "ok" and kakao_payload.get("count", 0) > 0:
+                            kakao_candidates = kakao_payload.get("candidates", [])
+                            metric_reflection = ""
+                            if enrich_kakao_place_metrics:
+                                kakao_candidates, metric_reflection = await enrich_kakao_candidates_with_place_metrics(
+                                    candidates=kakao_candidates,
+                                    parsed=parsed,
+                                    public_client=public_client,
+                                    trace=trace,
+                                    messages=messages,
+                                    use_llm=use_llm,
+                                    enabled=True,
+                                )
                             kakao_rank_observation = await public_client.call_tool(
                                 ToolAction(
                                     agent_name="Public Data Agent",
                                     pattern="ReAct Pattern",
                                     tool_name="rank_tourapi_restaurants",
                                     tool_input={
-                                        "candidates": kakao_payload.get("candidates", []),
+                                        "candidates": kakao_candidates,
                                         "ranking_policy": build_ranking_policy(parsed, weather_observation.data, profile_observation.data),
                                     },
                                     mcp_server="public_data_server.py",
@@ -1898,6 +2152,8 @@ async def run_agent(
                                     "TourAPI에서 요청 음식 종류를 직접 충족하는 후보가 부족해 Kakao Local API 보강 검색을 수행했습니다. "
                                     + deterministic_reflection
                                 )
+                                if metric_reflection:
+                                    deterministic_reflection += " " + metric_reflection
                         else:
                             kakao_issue = {
                                 "type": "kakao_local_unavailable",
@@ -2173,6 +2429,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--use-llm", action="store_true", help="GPT Agent 모드를 명시적으로 사용합니다. 기본값은 OPENAI_API_KEY가 있으면 자동 사용입니다.")
     parser.add_argument("--no-llm", action="store_true", help="GPT Agent 모드를 끄고 규칙 기반 fallback으로 실행합니다.")
+    parser.add_argument(
+        "--enrich-kakao-place-metrics",
+        action="store_true",
+        help="Kakao 장소 링크 페이지에서 평점/리뷰 수/가격대 지표 보강을 시도합니다. 실패하면 기존 Kakao Local 메타데이터 검증으로 fallback합니다.",
+    )
     return parser.parse_args()
 
 
@@ -2197,7 +2458,15 @@ def main() -> None:
     query = resolve_query(args)
     use_llm = resolve_llm_enabled(args)
     trace_path = Path(args.trace) if args.trace else None
-    answer = asyncio.run(run_agent(query, trace_path, use_llm, args.data_source))
+    answer = asyncio.run(
+        run_agent(
+            query,
+            trace_path,
+            use_llm,
+            args.data_source,
+            enrich_kakao_place_metrics=args.enrich_kakao_place_metrics,
+        )
+    )
     print(answer)
     if trace_path is not None:
         print()

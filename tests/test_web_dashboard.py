@@ -20,6 +20,8 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("LLM 모드", html)
         self.assertIn("Kakao Local API 우선 사용", html)
         self.assertIn("kakaoEnabled", html)
+        self.assertIn("Kakao 장소 링크 지표 보강", html)
+        self.assertIn("kakaoPlaceEnrichment", html)
         self.assertIn("stderr 출력 없음", html)
         self.assertIn("answer-pre", html)
         self.assertIn("answer-view", html)
@@ -123,9 +125,12 @@ class WebDashboardTests(unittest.TestCase):
                         query="전주 신시가지 술집 추천",
                         data_source="kakao",
                         llm_mode="no",
+                        kakao_place_enrichment=True,
                     )
 
                 self.assertIn("kakao", record["command"])
+                self.assertIn("--enrich-kakao-place-metrics", record["command"])
+                self.assertTrue(record["kakao_place_enrichment"])
                 self.assertEqual(record["effective_data_source"], "kakao → Kakao Local")
             finally:
                 web_dashboard.RUNS_ROOT = original_root

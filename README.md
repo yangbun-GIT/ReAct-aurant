@@ -20,6 +20,7 @@
 
 - 기본 데이터 경로는 `--data-source auto`입니다. 자동 모드는 TourAPI 공공데이터를 먼저 시도하고, 키가 없거나 지원 범위를 벗어나면 로컬 샘플 데이터셋으로 fallback합니다.
 - `KAKAO_REST_API_KEY`가 있으면 `--data-source kakao` 또는 웹의 `Kakao Local API 우선 사용` 체크박스로 Kakao Local API를 1차 장소/위치 검색 도구로 사용할 수 있습니다. TourAPI는 공공데이터 근거는 좋지만 평점, 리뷰, 가격대와 술집/상권 장소 검색 품질이 제한적이므로, 실제 장소 후보 탐색은 Kakao Local 우선 모드가 더 적합합니다.
+- `--enrich-kakao-place-metrics` 또는 웹의 `Kakao 장소 링크 지표 보강`을 켜면 Kakao Local 후보의 장소 링크 페이지를 별도 도구로 가져온 뒤, 추출된 평점·리뷰 수·가격대 증거만 LLM이 조건 충족 여부로 판정합니다. 장소 페이지에서 지표를 찾지 못하거나 LLM 호출이 실패하면 기존 Kakao 공식 메타데이터 검증으로 fallback합니다.
 - 날씨는 API key가 필요 없는 Open-Meteo를 사용하고, 호출 실패 시 mock 날씨로 대체합니다.
 - OpenAI API key가 있으면 기본 실행에서 GPT Agent 모드를 자동 사용합니다. GPT는 요청 분석 계획, Reflection, 최종 답변 생성을 담당하고 MCP 도구 호출 결과를 근거로만 답변합니다.
 - MCP 서버는 공식 오픈소스 MCP Python SDK(`mcp`)로 구현했습니다.
@@ -136,6 +137,7 @@ LLM Agent 환경 변수:
 - `--data-source public`: TourAPI 공공데이터 경로를 우선 사용합니다. 전주 외 지역이거나 키가 없으면 로컬 fallback을 기록합니다.
 - `--data-source kakao`: Kakao Local API를 1차 장소/위치 검색 도구로 사용합니다. 웹에서는 `Kakao Local API 우선 사용` 체크박스를 켜면 이 모드로 실행됩니다.
 - `--data-source local`: 공공데이터를 호출하지 않고 로컬 샘플 데이터셋만 사용합니다.
+- `--enrich-kakao-place-metrics`: Kakao 장소 링크에서 평점/리뷰 수/가격대 지표 후보를 추출하고, GPT Agent가 추출 증거만 기준으로 조건 충족 여부를 판정합니다. 이 옵션은 보강용이며 실패 시 기존 Kakao Local 기준으로 자동 fallback합니다.
 
 `auto`는 실행 시점에 실제 사용 경로가 달라질 수 있습니다. 웹 대시보드의 실행 요약에는 예를 들어 `auto -> TourAPI`, `kakao -> Kakao Local`, `auto -> GPT`, `auto -> rule fallback`처럼 실제 선택된 데이터 소스와 LLM 경로가 표시됩니다. 저장된 실행 목록은 가독성을 위해 질문과 실행 일시만 표시하고, 세부 실행 경로는 클릭 후 실행 요약에서 확인합니다.
 
@@ -222,6 +224,7 @@ docker compose up --build
 
 - `search_tourapi_restaurants(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit, use_cache)`: 전주 세부 위치를 좌표로 해석한 뒤 TourAPI 음식점 후보를 조회합니다. `cuisine`은 큰 분류와 구체 음식명 모두 받을 수 있고, TourAPI가 제공하지 않는 평점/리뷰/가격 조건은 응답의 `unavailable_filters`와 최종 답변의 데이터 한계로 표시합니다. 술집 의도는 막걸리, 전집, 포차, 호프, 이자카야 등 직접 관련 키워드로 확장하되 일반 식당으로 무리하게 채우지 않습니다.
 - `search_kakao_local_places(area, keyword, cuisine, max_price_level, min_rating, min_review_count, max_distance_m, near_gaeksa, limit)`: `KAKAO_REST_API_KEY`가 있을 때 Kakao Local API 키워드 검색으로 장소 후보를 조회합니다. Kakao 우선 모드에서는 이 도구가 1차 검색 도구이며, 사전에 없는 전주 세부 위치는 Kakao Local API 키워드 검색으로 좌표를 해석합니다. Kakao의 `category_name`은 `음식점 > ... > 세부항목`의 마지막 항목을 보존해 일본식라면, 양꼬치, 브런치카페 같은 세부 업종을 넓은 대분류로 뭉개지 않습니다. 키가 없으면 error Observation을 반환해 Agent가 데이터 한계를 설명하도록 합니다.
+- `extract_kakao_place_metrics(place_url, place_name, min_rating, min_review_count, max_price_level)`: Kakao 장소 링크 페이지를 가져와 평점, 리뷰 수, 가격대가 포함된 텍스트 증거를 추출합니다. 이 도구 Observation에 지표가 있을 때만 LLM이 조건 충족 여부를 판정하며, 지표가 없으면 후보를 임의 배제하지 않고 기존 Kakao Local 메타데이터 기준으로 fallback합니다.
 - `get_tourapi_restaurant_detail(content_id, use_cache)`: `detailCommon2`, `detailIntro2` 기반 상세 정보를 조회합니다.
 - `rank_tourapi_restaurants(candidates, ranking_policy)`: 공공데이터 후보를 주소, 거리, 상세정보 충실도, 음식 종류, 목적 적합성으로 점수화합니다.
 - `cache_tourapi_response(cache_key, payload)`: 제출 검증용 공개 payload 캐시 저장 도구입니다.
@@ -354,8 +357,9 @@ Kakao Local API:
 - 호출 도구: `search_kakao_local_places`
 - 제공 정보: 장소명, 주소, 전화번호, 카테고리, 거리, 장소 URL
 - 미제공 정보: 평점, 리뷰 수, 가격대. 해당 값은 임의 생성하지 않고 최종 답변의 데이터 한계로 표시합니다. Kakao Local을 사용하는 경우에는 장소 링크, 세부 카테고리, 주소, 거리, 전화번호, 업종 일치 여부를 공식 메타데이터 검증 점수로 보완해 후보 품질을 비교합니다.
+- 선택 보강: `--enrich-kakao-place-metrics`를 켜면 장소 URL 페이지를 별도 도구로 읽고, 추출된 증거 텍스트 안에 평점/리뷰 수/가격대가 있을 때만 LLM이 최소 조건 충족 여부를 판정합니다. 증거가 없으면 `unknown`으로 남기고 후보를 임의로 탈락시키지 않습니다.
 
-Naver Search API와 Google Places API는 현재 기본 실행에서 제외했습니다. Naver Search API는 지역 검색 결과를 `comment` 정렬로 받을 수 있어 리뷰 언급량 보조 신호로는 쓸 수 있지만, 공식 응답에 평점/방문자 리뷰 수/가격대가 없습니다. Google Places API는 `rating`, `userRatingCount`, `priceLevel`을 제공하므로 평점/리뷰/가격을 실제 추천 기준으로 반영하려면 가장 직접적인 공식 대안입니다. 다만 Google Places는 결제 설정과 SKU별 무료 사용량/초과 과금 관리가 필요하므로, 비용 0원 제출 조건에서는 기본 비활성으로 둡니다. Kakao 장소 URL을 LLM에게 추정시키는 방식은 공식 Observation이 아니므로 사용하지 않습니다.
+Naver Search API와 Google Places API는 현재 기본 실행에서 제외했습니다. Naver Search API는 지역 검색 결과를 `comment` 정렬로 받을 수 있어 리뷰 언급량 보조 신호로는 쓸 수 있지만, 공식 응답에 평점/방문자 리뷰 수/가격대가 없습니다. Google Places API는 `rating`, `userRatingCount`, `priceLevel`을 제공하므로 평점/리뷰/가격을 실제 추천 기준으로 반영하려면 가장 직접적인 공식 대안입니다. 다만 Google Places는 결제 설정과 SKU별 무료 사용량/초과 과금 관리가 필요하므로, 비용 0원 제출 조건에서는 기본 비활성으로 둡니다. Kakao 장소 URL을 LLM에게 숫자로 추정시키지 않고, 장소 페이지 추출 도구의 Observation에 있는 증거만 LLM 판정 입력으로 사용합니다.
 
 ## 테스트
 

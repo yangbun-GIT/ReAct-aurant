@@ -12,6 +12,7 @@ from public_data_server import (
     _score_public_restaurant,
     _standardize_kakao_place,
     _standardize_restaurant,
+    extract_kakao_place_metrics,
     search_kakao_local_places,
     search_tourapi_restaurants,
 )
@@ -589,6 +590,32 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["source"], "Kakao Local API")
         self.assertIn("KAKAO_REST_API_KEY", result["message"])
 
+    def test_extract_kakao_place_metrics_parses_static_page_evidence(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            text = "<html><body><main>평점 4.6 리뷰 128개 가격대 ₩₩</main></body></html>"
+
+            def raise_for_status(self) -> None:
+                return None
+
+        with patch("public_data_server.httpx.get", return_value=FakeResponse()):
+            result = extract_kakao_place_metrics(
+                place_url="https://place.map.kakao.com/123",
+                place_name="테스트라멘",
+                min_rating=4.0,
+                min_review_count=50,
+                max_price_level=2,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["metrics_status"], "observed")
+        self.assertEqual(result["rating"], 4.6)
+        self.assertEqual(result["review_count"], 128)
+        self.assertEqual(result["price_level"], 2)
+        self.assertEqual(result["condition_checks"]["rating"], True)
+        self.assertEqual(result["condition_checks"]["review_count"], True)
+        self.assertEqual(result["condition_checks"]["price_level"], True)
+
     def test_public_rank_scores_jeonju_food_candidates(self) -> None:
         candidate = _standardize_restaurant(
             {
@@ -829,6 +856,14 @@ class PublicReflectionTests(unittest.TestCase):
                     "score_reasons": ["빵집 조건 일치"],
                     "metadata_quality_score": 5,
                     "metadata_quality_checks": ["카카오 장소 링크 제공", "카카오 세부 카테고리 제공", "전주 주소 확인", "기준 위치와 거리 확인", "요청 업종 직접 일치"],
+                    "place_metric_judgment": {
+                        "status": "observed",
+                        "rating": 4.5,
+                        "review_count": 120,
+                        "price_level": 2,
+                        "meets_conditions": True,
+                        "reason": "관측된 지표는 요청 조건을 위반하지 않습니다.",
+                    },
                     "place_url": "https://place.map.kakao.com/1",
                 }
             ],
@@ -845,6 +880,7 @@ class PublicReflectionTests(unittest.TestCase):
         self.assertIn("미적용 조건:", answer)
         self.assertIn("공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 해당 수치 자체는 직접 필터링하지 않았고", answer)
         self.assertIn("공식 메타데이터 검증: 5점", answer)
+        self.assertIn("장소 링크 지표 보강: observed", answer)
         self.assertIn("장소 링크: https://place.map.kakao.com/1", answer)
 
 

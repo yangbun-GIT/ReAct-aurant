@@ -355,7 +355,7 @@ def clear_run_records() -> int:
     return removed
 
 
-def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str) -> dict[str, Any]:
+def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str, kakao_place_enrichment: bool = False) -> dict[str, Any]:
     if data_source not in VALID_DATA_SOURCES:
         raise ValueError("지원하지 않는 데이터 소스입니다.")
     if llm_mode not in VALID_LLM_MODES:
@@ -381,6 +381,8 @@ def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str) -> dict
         command.append("--use-llm")
     elif llm_mode == "no":
         command.append("--no-llm")
+    if kakao_place_enrichment:
+        command.append("--enrich-kakao-place-metrics")
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -424,6 +426,7 @@ def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str) -> dict
         "query": query.strip(),
         "data_source": data_source,
         "llm_mode": llm_mode,
+        "kakao_place_enrichment": kakao_place_enrichment,
         "returncode": returncode,
         "timed_out": timed_out,
         "command": display_command,
@@ -1105,6 +1108,15 @@ def render_dashboard() -> str:
               </span>
             </label>
           </div>
+          <div class="toggle-field">
+            <label class="toggle-label" for="kakaoPlaceEnrichment">
+              <input id="kakaoPlaceEnrichment" name="kakaoPlaceEnrichment" type="checkbox">
+              <span>
+                Kakao 장소 링크 지표 보강
+                <span class="toggle-help">장소 링크 페이지에서 평점·리뷰 수·가격대 추출을 시도하고, 실패하면 기존 추천 기준으로 fallback합니다.</span>
+              </span>
+            </label>
+          </div>
           <button id="runBtn" type="submit">실행</button>
         </form>
         <div class="field" style="margin-top:14px">
@@ -1445,7 +1457,8 @@ def render_dashboard() -> str:
         const payload = {{
           query: document.getElementById('query').value,
           data_source: document.getElementById('kakaoEnabled').checked ? 'kakao' : document.getElementById('dataSource').value,
-          llm_mode: document.getElementById('llmMode').value
+          llm_mode: document.getElementById('llmMode').value,
+          kakao_place_enrichment: document.getElementById('kakaoPlaceEnrichment').checked
         }};
         const response = await fetch('/api/run', {{
           method: 'POST',
@@ -1707,6 +1720,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     query=str(payload.get("query", "")),
                     data_source=str(payload.get("data_source", "auto")),
                     llm_mode=str(payload.get("llm_mode", "auto")),
+                    kakao_place_enrichment=bool(payload.get("kakao_place_enrichment", False)),
                 )
             except Exception as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
