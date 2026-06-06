@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from jeonju_gazetteer import jeonju_alias_terms, jeonju_detail_area_aliases
 from public_data_server import CUISINE_KEYWORDS as PUBLIC_CUISINE_KEYWORDS
+from public_data_server import _food_query_terms as public_food_query_terms
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -512,7 +513,10 @@ def infer_max_distance_m(query: str, location: str, requested_weather: str | Non
         "웨리단길",
         "한옥마을",
         "전북대 구정문",
+        "전북대 신정문",
         "구정문",
+        "신정문",
+        "한옥정문",
         "전북대",
         "신시가지",
         "에코시티",
@@ -1058,10 +1062,7 @@ def reflect_public_recommendations(
 
 
 def _expanded_public_cuisine_terms(cuisine: str) -> list[str]:
-    terms = [cuisine]
-    for category, keywords in PUBLIC_CUISINE_KEYWORDS.items():
-        if cuisine == category or cuisine in keywords or any(keyword in cuisine for keyword in keywords):
-            terms.extend([category, *keywords])
+    terms = public_food_query_terms(cuisine) or [cuisine]
     blocked_match_terms = {"전주", "맛집", "음식점", "식당", "추천", "근처", "주변"}
     unique: list[str] = []
     for term in terms:
@@ -1095,7 +1096,6 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
             candidate.get("cuisine"),
             candidate.get("address"),
             candidate.get("overview"),
-            candidate.get("search_keyword"),
             " ".join(str(value) for value in (candidate.get("category_codes") or {}).values() if value),
             " ".join(candidate.get("signature_menu") or []),
         ]
@@ -1501,6 +1501,66 @@ async def run_llm_final_answer(
         return draft_answer
 
 
+async def append_llm_fallback_recommendation(
+    *,
+    answer: str,
+    query: str,
+    parsed: ParsedRequest,
+    trace: TraceLogger,
+    messages_count: int,
+    use_llm: bool,
+    data_source: str,
+) -> str:
+    if not should_use_llm(use_llm):
+        return answer
+
+    system_prompt = (
+        "너는 전주시 맛집 추천 Agent의 마지막 fallback이다. 이 단계는 Kakao Local API/TourAPI에서 조건을 충족하는 "
+        "후보를 찾지 못한 경우에만 호출된다. 실제 API로 검증된 결과가 아니므로 평점, 리뷰 수, 가격대, 영업시간, 주소를 "
+        "새로 만들지 않는다. 전주 지역 상권 지식과 사용자의 조건을 바탕으로 'LLM 참고 추천' 섹션을 작성하되, "
+        "각 항목은 음식 종류/상권/추천 검색어/확인 필요 사항 중심으로 제시한다. 특정 상호명을 쓸 때는 '확인 필요'라고 표시한다."
+    )
+    user_prompt = json.dumps(
+        {
+            "user_query": query,
+            "parsed_request": parsed.model_dump(),
+            "data_source": data_source,
+            "instruction": (
+                "최종 답변 뒤에 붙일 한국어 fallback 섹션만 작성. 제목은 'LLM 참고 추천'으로 시작. "
+                "3개 이하 항목, API 미검증 고지 포함."
+            ),
+        },
+        ensure_ascii=False,
+    )
+    try:
+        fallback = await call_llm(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=600, temperature=0.2)
+        fallback = fallback.strip()
+        if not fallback:
+            return answer
+        trace.write(
+            agent_name="LLM Fallback Recommendation Agent",
+            pattern="Fallback + Reflection Pattern",
+            thought_summary="공식 API 후보가 비어 있어 GPT가 미검증 참고 추천 섹션만 생성했습니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "fallback_recommendation", "data_source": data_source},
+            observation={"api_recommendations": 0, "location": parsed.location, "cuisine": parsed.cuisine},
+            final_answer=fallback,
+            messages_count=messages_count,
+        )
+        return f"{answer}\n\n{fallback}"
+    except Exception as exc:
+        trace.write(
+            agent_name="LLM Fallback Recommendation Agent",
+            pattern="Fallback + Exception Handling Pattern",
+            thought_summary="LLM fallback 추천 생성이 실패해 API 기반 답변만 유지합니다.",
+            action_name="openai.chat.completions.create",
+            action_input={"model": llm_model_name(), "stage": "fallback_recommendation", "data_source": data_source},
+            observation={"status": "error", "message": str(exc)},
+            messages_count=messages_count,
+        )
+        return answer
+
+
 def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest) -> dict[str, Any]:
     rating = observation.get("rating")
     review_count = observation.get("review_count")
@@ -1769,6 +1829,9 @@ async def enrich_kakao_candidates_with_place_metrics(
     enriched: list[dict[str, Any]] = []
     excluded: list[str] = []
     observed_count = 0
+    metric_conditions_requested = any(
+        value is not None for value in [parsed.min_rating, parsed.min_review_count, parsed.max_price_level]
+    )
     for candidate in candidates:
         candidate = dict(candidate)
         judgment = judgment_by_url.get(_normalize_kakao_place_url(candidate.get("place_url")))
@@ -1789,6 +1852,9 @@ async def enrich_kakao_candidates_with_place_metrics(
                     candidate["average_price"] = f"가격대 {judgment.get('price_level')}"
                 candidate.setdefault("score_reasons", [])
                 candidate["metric_enrichment_note"] = reason
+        elif metric_conditions_requested:
+            excluded.append(f"{candidate.get('name')}: 장소 링크 지표 미검증")
+            continue
         enriched.append(candidate)
 
     if not enriched:
@@ -2142,6 +2208,16 @@ async def run_agent(
                     use_llm=use_llm,
                     data_source=source_for_answer,
                 )
+                if not recommendations:
+                    answer = await append_llm_fallback_recommendation(
+                        answer=answer,
+                        query=query,
+                        parsed=parsed,
+                        trace=trace,
+                        messages_count=len(messages),
+                        use_llm=use_llm,
+                        data_source=source_for_answer,
+                    )
                 messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
                 trace.write(
                     agent_name="Coordinator Agent",
@@ -2354,6 +2430,16 @@ async def run_agent(
                         use_llm=use_llm,
                         data_source=source_for_answer,
                     )
+                    if not recommendations:
+                        answer = await append_llm_fallback_recommendation(
+                            answer=answer,
+                            query=query,
+                            parsed=parsed,
+                            trace=trace,
+                            messages_count=len(messages),
+                            use_llm=use_llm,
+                            data_source=source_for_answer,
+                        )
                     messages.append({"role": "assistant", "content": f"Final Answer: {answer}"})
                     trace.write(
                         agent_name="Coordinator Agent",

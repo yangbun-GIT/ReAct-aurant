@@ -22,6 +22,7 @@ from public_data_server import (
 from react_client import (
     ParsedRequest,
     _observed_metric_judgment,
+    append_llm_fallback_recommendation,
     build_public_final_answer,
     build_ranking_policy,
     enrich_kakao_candidates_with_place_metrics,
@@ -138,6 +139,19 @@ class RequestParsingTests(unittest.TestCase):
 
         self.assertEqual(parsed.location, "전주 전북대 구정문")
         self.assertEqual(parsed.cuisine, "소바")
+
+    def test_parse_jeonbuk_university_new_gate_alias_before_parent_area(self) -> None:
+        cases = [
+            "전북대 신정문 근처 초밥 추천",
+            "전북대학교 한옥정문 근처 카페 추천",
+            "전북대 정문 근처 밥집 추천",
+        ]
+
+        for query in cases:
+            with self.subTest(query=query):
+                parsed = parse_user_request(query)
+
+                self.assertEqual(parsed.location, "전주 전북대 신정문")
 
     def test_parse_diverse_food_types_beyond_basic_categories(self) -> None:
         cases = {
@@ -384,6 +398,16 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertIsNotNone(search_area)
         self.assertEqual(search_area["name"], "전북대 구정문")
 
+    def test_resolve_search_area_supports_jeonbuk_university_new_gate_aliases(self) -> None:
+        for query in ["전북대 신정문 초밥", "전북대학교 한옥정문 카페", "전북대 정문 밥집"]:
+            with self.subTest(query=query):
+                search_area = _resolve_search_area(query)
+
+                self.assertIsNotNone(search_area)
+                self.assertEqual(search_area["name"], "전북대 신정문")
+                self.assertEqual(search_area["resolution_source"], "local_jeonju_gazetteer")
+                self.assertAlmostEqual(search_area["longitude"], 127.1316, places=3)
+
     def test_gaeksa_area_uses_narrow_commercial_radius(self) -> None:
         search_area = _resolve_search_area("전주 객사 맛집")
 
@@ -432,6 +456,27 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertTrue(_matches_food_query(restaurant, "파스타"))
+
+    def test_specific_sushi_query_does_not_match_ramen_sibling_category(self) -> None:
+        ramen = {
+            "name": "치쿠린 전북대본점",
+            "cuisine": "일본식라면",
+            "address": "전북특별자치도 전주시 덕진구 명륜3길 9-1",
+            "overview": "Kakao Local category: 음식점 > 일식 > 일본식라면",
+            "signature_menu": [],
+            "operation": {},
+        }
+        sushi = {
+            "name": "도꾸이",
+            "cuisine": "초밥,롤",
+            "address": "전북특별자치도 전주시 덕진구 권삼득로 237",
+            "overview": "Kakao Local category: 음식점 > 일식 > 초밥,롤",
+            "signature_menu": [],
+            "operation": {},
+        }
+
+        self.assertFalse(_matches_food_query(ramen, "초밥"))
+        self.assertTrue(_matches_food_query(sushi, "초밥"))
 
     def test_food_query_expands_bar_intent_to_alcohol_terms(self) -> None:
         restaurant = {
@@ -703,6 +748,32 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertFalse(_public_candidate_matches_cuisine(candidate, "한식"))
+
+    def test_public_candidate_match_does_not_treat_search_keyword_as_cuisine_match(self) -> None:
+        candidate = {
+            "name": "코츠모",
+            "cuisine": "술집",
+            "address": "전북특별자치도 전주시 덕진구 명륜3길 18-6",
+            "overview": "Kakao Local category: 음식점 > 술집 > 일본식주점",
+            "search_keyword": "초밥",
+            "category_codes": {"cat3": "음식점 > 술집 > 일본식주점"},
+            "signature_menu": [],
+        }
+
+        self.assertFalse(_public_candidate_matches_cuisine(candidate, "초밥"))
+
+    def test_public_candidate_match_does_not_expand_specific_sushi_to_all_japanese_food(self) -> None:
+        candidate = {
+            "name": "치쿠린 전북대본점",
+            "cuisine": "일본식라면",
+            "address": "전북특별자치도 전주시 덕진구 명륜3길 9-1",
+            "overview": "Kakao Local category: 음식점 > 일식 > 일본식라면",
+            "search_keyword": "일식",
+            "category_codes": {"cat3": "음식점 > 일식 > 일본식라면"},
+            "signature_menu": [],
+        }
+
+        self.assertFalse(_public_candidate_matches_cuisine(candidate, "초밥"))
 
     def test_kakao_search_records_metric_proxy_without_fake_rating_review_price(self) -> None:
         kakao_payload = {
@@ -1352,6 +1423,98 @@ class KakaoMetricEnrichmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enriched[0]["rating"], 3.8)
         self.assertEqual(enriched[0]["review_count"], 30)
         self.assertIn("1개 후보", reflection)
+
+    async def test_enrichment_excludes_unchecked_candidates_when_metric_conditions_exist(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 전북대 신정문",
+            cuisine="초밥",
+            min_rating=3.7,
+            min_review_count=30,
+        )
+        candidates = [
+            {
+                "restaurant_id": "kakao:1",
+                "name": "검증된초밥",
+                "place_url": "https://place.map.kakao.com/1",
+                "score_reasons": [],
+            },
+            {
+                "restaurant_id": "kakao:2",
+                "name": "미검증일식",
+                "place_url": "https://place.map.kakao.com/2",
+                "score_reasons": [],
+            },
+        ]
+
+        class FakeClient:
+            async def call_tool(self, action):
+                class Result:
+                    summary = "metrics observed"
+                    data = {
+                        "status": "ok",
+                        "place_url": "https://place.map.kakao.com/1",
+                        "place_name": "검증된초밥",
+                        "metrics_status": "ok",
+                        "rating": 4.2,
+                        "review_count": 40,
+                        "price_level": None,
+                        "condition_checks": {"rating": True, "review_count": True, "price_level": None},
+                    }
+
+                return Result()
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        enriched, reflection = await enrich_kakao_candidates_with_place_metrics(
+            candidates=candidates,
+            parsed=parsed,
+            public_client=FakeClient(),
+            trace=DummyTrace(),
+            messages=[],
+            use_llm=False,
+            enabled=True,
+            max_items=1,
+        )
+
+        self.assertEqual([candidate["name"] for candidate in enriched], ["검증된초밥"])
+        self.assertIn("미검증일식", reflection)
+
+    async def test_llm_fallback_recommendation_appends_only_when_enabled(self) -> None:
+        parsed = ParsedRequest(location="전주 전북대 신정문", cuisine="초밥")
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        async def fake_llm(**kwargs):
+            return "LLM 참고 추천\n- API 미검증 후보입니다. 전북대 신정문 초밥으로 다시 확인하세요."
+
+        base_answer = "조건을 충족하는 추천 후보를 확보하지 못했습니다."
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch("react_client.call_llm", side_effect=fake_llm):
+            answer = await append_llm_fallback_recommendation(
+                answer=base_answer,
+                query="전북대 신정문 초밥 추천",
+                parsed=parsed,
+                trace=DummyTrace(),
+                messages_count=1,
+                use_llm=True,
+                data_source="Kakao Local API",
+            )
+
+        self.assertIn("LLM 참고 추천", answer)
+
+        disabled_answer = await append_llm_fallback_recommendation(
+            answer=base_answer,
+            query="전북대 신정문 초밥 추천",
+            parsed=parsed,
+            trace=DummyTrace(),
+            messages_count=1,
+            use_llm=False,
+            data_source="Kakao Local API",
+        )
+        self.assertEqual(disabled_answer, base_answer)
 
 
 if __name__ == "__main__":
