@@ -1513,6 +1513,91 @@ def _normalize_kakao_place_url(value: Any) -> str:
     return re.sub(r"^http://", "https://", str(value or "").strip())
 
 
+def _metric_condition_checks(
+    *,
+    rating: float | None,
+    review_count: int | None,
+    price_level: int | None,
+    parsed: ParsedRequest,
+) -> dict[str, bool | None]:
+    return {
+        "rating": None if rating is None else rating >= float(parsed.min_rating),
+        "review_count": None if review_count is None else review_count >= int(parsed.min_review_count),
+        "price_level": None
+        if price_level is None or parsed.max_price_level is None
+        else price_level <= int(parsed.max_price_level),
+    }
+
+
+def _valid_llm_rating(value: Any) -> float | None:
+    try:
+        rating = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rating if 0 <= rating <= 5 else None
+
+
+def _valid_llm_review_count(value: Any) -> int | None:
+    try:
+        review_count = int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    return review_count if review_count >= 0 else None
+
+
+def _valid_llm_price_level(value: Any) -> int | None:
+    try:
+        price_level = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return price_level if 1 <= price_level <= 4 else None
+
+
+def _merge_llm_metric_judgment(
+    source_observation: dict[str, Any],
+    llm_judgment: dict[str, Any],
+    parsed: ParsedRequest,
+) -> dict[str, Any]:
+    if source_observation.get("metrics_status") == "not_found":
+        return _observed_metric_judgment(source_observation, parsed)
+
+    source_rating = _valid_llm_rating(source_observation.get("rating"))
+    source_review_count = _valid_llm_review_count(source_observation.get("review_count"))
+    source_price_level = _valid_llm_price_level(source_observation.get("price_level"))
+
+    # GPT may recover a value from fetched evidence text that regex missed, but it may not
+    # override structured values already observed from Kakao panel/static parsing.
+    rating = source_rating if source_rating is not None else _valid_llm_rating(llm_judgment.get("rating"))
+    review_count = (
+        source_review_count
+        if source_review_count is not None
+        else _valid_llm_review_count(llm_judgment.get("review_count"))
+    )
+    price_level = (
+        source_price_level
+        if source_price_level is not None
+        else _valid_llm_price_level(llm_judgment.get("price_level"))
+    )
+    merged_observation = {
+        **source_observation,
+        "rating": rating,
+        "review_count": review_count,
+        "price_level": price_level,
+        "condition_checks": _metric_condition_checks(
+            rating=rating,
+            review_count=review_count,
+            price_level=price_level,
+            parsed=parsed,
+        ),
+    }
+    deterministic = _observed_metric_judgment(merged_observation, parsed)
+    reason = str(llm_judgment.get("reason") or "").strip()
+    if reason and deterministic.get("meets_conditions") is not False:
+        deterministic["reason"] = reason
+    deterministic["judgment_source"] = "gpt_evidence"
+    return deterministic
+
+
 async def run_llm_kakao_metric_judgment(
     *,
     metric_observations: list[dict[str, Any]],
@@ -1546,9 +1631,9 @@ async def run_llm_kakao_metric_judgment(
         for item in metric_observations
     ]
     system_prompt = (
-        "너는 Kakao 장소 페이지 지표 검증 모듈이다. 제공된 evidence_text와 추출값에 명시된 정보만 사용한다. "
-        "증거에 없는 평점, 리뷰 수, 가격대는 절대 추정하지 말고 null로 둔다. "
-        "각 장소가 최소평점, 최소리뷰수, 최대가격대 조건을 만족하는지 JSON으로만 판단한다."
+        "너는 Kakao 장소 페이지 지표 검증 모듈이다. URL을 직접 열 수 없으므로 도구가 가져온 evidence_text와 추출값만 사용한다. "
+        "증거에 명시된 평점, 후기 수, 가격대만 JSON으로 옮기고, 증거에 없는 값은 절대 추정하지 말고 null로 둔다. "
+        "블로그 수는 Kakao 후기 수로 취급하지 않는다. 각 장소가 최소평점, 최소리뷰수, 최대가격대 조건을 만족하는지 JSON으로만 판단한다."
     )
     user_prompt = json.dumps(
         {
@@ -1585,10 +1670,7 @@ async def run_llm_kakao_metric_judgment(
             if not isinstance(judgment, dict):
                 continue
             source_observation = by_url.get(_normalize_kakao_place_url(judgment.get("place_url"))) or {}
-            if source_observation.get("metrics_status") == "not_found":
-                normalized.append(_observed_metric_judgment(source_observation, parsed))
-                continue
-            normalized.append({**_observed_metric_judgment(source_observation, parsed), **judgment})
+            normalized.append(_merge_llm_metric_judgment(source_observation, judgment, parsed))
         if not normalized:
             normalized = fallback
         trace.write(

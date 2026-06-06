@@ -1,5 +1,6 @@
-import unittest
 from argparse import Namespace
+import os
+import unittest
 from unittest.mock import patch
 
 from env_context_server import _resolve_location as _resolve_weather_location
@@ -25,6 +26,7 @@ from react_client import (
     evaluate_input_guard,
     parse_llm_json,
     parse_user_request,
+    run_llm_kakao_metric_judgment,
     reflect_public_recommendations,
     resolve_llm_enabled,
     resolve_query,
@@ -1034,6 +1036,87 @@ class PublicReflectionTests(unittest.TestCase):
 
 
 class KakaoMetricEnrichmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_metric_judgment_cannot_override_observed_failed_metrics(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="일본식라면",
+            min_rating=3.7,
+            min_review_count=30,
+        )
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        async def fake_llm(**kwargs):
+            return '[{"place_url":"https://place.map.kakao.com/1","place_name":"산쪼메","status":"observed","rating":4.8,"review_count":200,"price_level":1,"meets_conditions":true,"reason":"GPT 추정 통과"}]'
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch("react_client.call_llm", side_effect=fake_llm):
+            judgments = await run_llm_kakao_metric_judgment(
+                metric_observations=[
+                    {
+                        "place_url": "https://place.map.kakao.com/1",
+                        "place_name": "산쪼메",
+                        "metrics_status": "observed",
+                        "rating": 3.1,
+                        "review_count": 30,
+                        "price_level": None,
+                        "condition_checks": {"rating": False, "review_count": True, "price_level": None},
+                        "evidence_text": "kakaomap_average_score=3.1; kakaomap_review_count=30",
+                    }
+                ],
+                parsed=parsed,
+                trace=DummyTrace(),
+                messages_count=1,
+                use_llm=True,
+            )
+
+        self.assertEqual(judgments[0]["rating"], 3.1)
+        self.assertEqual(judgments[0]["review_count"], 30)
+        self.assertFalse(judgments[0]["meets_conditions"])
+        self.assertIn("평점 3.1 < 최소 3.7", judgments[0]["reason"])
+
+    async def test_llm_metric_judgment_can_fill_values_from_fetched_evidence(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="고기집",
+            min_rating=3.7,
+            min_review_count=30,
+            max_price_level=2,
+        )
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        async def fake_llm(**kwargs):
+            return '[{"place_url":"https://place.map.kakao.com/2","place_name":"검증고기","status":"observed","rating":4.1,"review_count":57,"price_level":2,"meets_conditions":true,"reason":"증거 텍스트에서 평점 4.1, 후기 57개, 가격대 2를 확인"}]'
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch("react_client.call_llm", side_effect=fake_llm):
+            judgments = await run_llm_kakao_metric_judgment(
+                metric_observations=[
+                    {
+                        "place_url": "https://place.map.kakao.com/2",
+                        "place_name": "검증고기",
+                        "metrics_status": "observed",
+                        "rating": None,
+                        "review_count": None,
+                        "price_level": None,
+                        "condition_checks": {"rating": None, "review_count": None, "price_level": None},
+                        "evidence_text": "평점 4.1 후기 57개 가격대 ₩₩",
+                    }
+                ],
+                parsed=parsed,
+                trace=DummyTrace(),
+                messages_count=1,
+                use_llm=True,
+            )
+
+        self.assertEqual(judgments[0]["rating"], 4.1)
+        self.assertEqual(judgments[0]["review_count"], 57)
+        self.assertEqual(judgments[0]["price_level"], 2)
+        self.assertTrue(judgments[0]["meets_conditions"])
+
     async def test_enrichment_excludes_missing_rating_and_review_by_default(self) -> None:
         parsed = ParsedRequest(
             location="전주 객사",
