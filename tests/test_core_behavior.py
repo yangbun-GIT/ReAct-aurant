@@ -10,6 +10,7 @@ from public_data_server import (
     _is_jeonju_restaurant,
     _resolve_search_area,
     _score_public_restaurant,
+    _standardize_kakao_place,
     _standardize_restaurant,
     search_kakao_local_places,
     search_tourapi_restaurants,
@@ -157,6 +158,30 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.cuisine, "술집")
         self.assertIn("혼술", parsed.purpose)
         self.assertIn("음식종류=술집", parsed.extracted_conditions)
+
+    def test_parse_standalone_bar_as_strict_bar_request(self) -> None:
+        parsed = parse_user_request("전주 객사 바 추천")
+
+        self.assertEqual(parsed.location, "전주 객사")
+        self.assertEqual(parsed.cuisine, "바")
+        self.assertEqual(parsed.purpose, "술자리")
+        self.assertIn("음식종류=바", parsed.extracted_conditions)
+        self.assertIn("목적=술자리", parsed.extracted_conditions)
+
+    def test_parse_bar_place_intent_defaults_to_drinking_purpose(self) -> None:
+        parsed = parse_user_request("비오는 날 신시가지 술집 추천")
+
+        self.assertEqual(parsed.location, "전주 효자동")
+        self.assertEqual(parsed.cuisine, "술집")
+        self.assertEqual(parsed.purpose, "술자리")
+        self.assertNotIn("방문 목적", parsed.missing_conditions)
+
+    def test_parse_bakery_as_bakery_not_cafe(self) -> None:
+        parsed = parse_user_request("전주 객사 빵집 추천")
+
+        self.assertEqual(parsed.location, "전주 객사")
+        self.assertEqual(parsed.cuisine, "빵집")
+        self.assertIn("음식종류=빵집", parsed.extracted_conditions)
 
     def test_parse_weather_condition_across_jeonju_aliases(self) -> None:
         cases = {
@@ -377,6 +402,80 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertFalse(_matches_food_query(restaurant, "술집"))
+
+    def test_strict_bar_query_only_matches_bar_like_candidates(self) -> None:
+        bar = {
+            "name": "객사 칵테일바",
+            "cuisine": "술집",
+            "address": "전주시 완산구",
+            "overview": "Kakao Local category: 음식점 > 술집 > 칵테일바",
+            "signature_menu": [],
+            "operation": {},
+        }
+        restaurant = {
+            "name": "객사 한식당",
+            "cuisine": "한식",
+            "address": "전주시 완산구",
+            "overview": "Kakao Local category: 음식점 > 한식",
+            "signature_menu": ["백반"],
+            "operation": {},
+        }
+
+        self.assertTrue(_matches_food_query(bar, "바"))
+        self.assertFalse(_matches_food_query(restaurant, "바"))
+
+    def test_bakery_query_excludes_cafe_and_dessert_chains(self) -> None:
+        bakery = {
+            "name": "객사베이커리",
+            "cuisine": "베이커리",
+            "address": "전주시 완산구",
+            "overview": "Kakao Local category: 음식점 > 간식 > 제과,베이커리",
+            "signature_menu": [],
+            "operation": {},
+        }
+        dessert_chain = {
+            "name": "설빙 전주객사점",
+            "cuisine": "카페",
+            "address": "전주시 완산구",
+            "overview": "Kakao Local category: 음식점 > 카페 > 디저트카페",
+            "signature_menu": [],
+            "operation": {},
+        }
+        coffee_chain = {
+            "name": "더리터 전주객사점",
+            "cuisine": "카페",
+            "address": "전주시 완산구",
+            "overview": "Kakao Local category: 음식점 > 카페",
+            "signature_menu": [],
+            "operation": {},
+        }
+
+        self.assertTrue(_matches_food_query(bakery, "빵집"))
+        self.assertFalse(_matches_food_query(dessert_chain, "빵집"))
+        self.assertFalse(_matches_food_query(coffee_chain, "빵집"))
+
+    def test_kakao_standardization_does_not_treat_search_keyword_as_menu(self) -> None:
+        restaurant = _standardize_kakao_place(
+            {
+                "id": "1",
+                "place_name": "테스트 와인바",
+                "category_name": "음식점 > 술집 > 와인바",
+                "category_group_code": "FD6",
+                "category_group_name": "음식점",
+                "road_address_name": "전북특별자치도 전주시 완산구 전주객사길 1",
+                "x": "127.1467",
+                "y": "35.8187",
+                "distance": "120",
+                "place_url": "https://place.map.kakao.com/1",
+            },
+            reference_coordinates={"longitude": 127.1467, "latitude": 35.8187},
+            reference_name="객사",
+            requested_keyword="와인바",
+        )
+
+        self.assertEqual(restaurant["source"], "Kakao Local API")
+        self.assertEqual(restaurant["signature_menu"], [])
+        self.assertEqual(restaurant["search_keyword"], "와인바")
 
     @patch.dict("os.environ", {"KAKAO_REST_API_KEY": ""})
     def test_kakao_local_search_reports_missing_key_as_observation(self) -> None:

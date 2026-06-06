@@ -67,6 +67,7 @@ FOOD_QUERY_TERMS = [
     "떡볶이",
     "김밥",
     "분식",
+    "빵집",
     "카페",
     "디저트",
     "베이커리",
@@ -91,8 +92,10 @@ FOOD_QUERY_TERMS = [
     "펍",
     "맥주",
     "소주",
+    "바",
     "와인",
     "와인바",
+    "칵테일바",
     "칵테일",
 ]
 
@@ -167,10 +170,13 @@ WEATHER_EXPECTATION_NOTES = {
     "더움": "보편적인 기대: 더운 날은 냉면, 콩국수, 물회, 빙수처럼 시원하거나 가벼운 메뉴 선호를 추천 힌트로 적용했습니다.",
     "맑음": "보편적인 기대: 날씨가 좋은 날은 도보 이동, 분위기, 카페나 브런치 선호를 추천 힌트로 적용했습니다.",
 }
-BAR_INTENT_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일", "이자카야"]
-BAR_CANDIDATE_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일", "이자카야", "막걸리", "전집", "파전", "해물파전"]
-ALCOHOL_INTENT_TERMS = [*BAR_INTENT_TERMS, "막걸리", "전집", "파전"]
-STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS)
+BAR_INTENT_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일바", "칵테일", "이자카야", "바"]
+BAR_CANDIDATE_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일바", "칵테일", "이자카야"]
+TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
+BAKERY_INTENT_TERMS = ["빵집", "베이커리", "빵"]
+ALCOHOL_INTENT_TERMS = [*BAR_INTENT_TERMS, *TRADITIONAL_DRINKING_TERMS]
+BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
+STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS) | set(BAKERY_INTENT_TERMS)
 
 
 class ParsedRequest(BaseModel):
@@ -401,6 +407,10 @@ def _contains_bar_intent(query: str) -> bool:
             if re.search(r"(?<!전)주점", query):
                 return True
             continue
+        if term == "바":
+            if re.search(r"(^|[^가-힣A-Za-z])바($|[^가-힣A-Za-z])", query):
+                return True
+            continue
         if term in query:
             return True
     return False
@@ -425,6 +435,8 @@ def _non_cuisine_terms() -> set[str]:
 
 
 def detect_cuisine(query: str) -> str | None:
+    if re.search(r"(^|[^가-힣A-Za-z])바($|[^가-힣A-Za-z])", query) or any(term in query for term in ["와인바", "칵테일바"]):
+        return "바"
     if _contains_bar_intent(query):
         return "술집"
     for term in FOOD_QUERY_TERMS:
@@ -717,6 +729,8 @@ def parse_user_request(query: str) -> ParsedRequest:
         purpose_parts.append("혼술")
     elif _contains_any(query, ["술자리", "한잔"]):
         purpose_parts.append("술자리")
+    elif cuisine in ALCOHOL_INTENT_TERMS:
+        purpose_parts.append("술자리")
     purpose = "와 ".join(purpose_parts) if purpose_parts else "일반 식사"
     if not purpose_parts:
         missing_conditions.append("방문 목적")
@@ -979,9 +993,13 @@ def reflect_public_recommendations(
 def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -> bool:
     terms = [cuisine]
     if cuisine == "술집":
-        terms.extend(BAR_CANDIDATE_MATCH_TERMS)
-    elif cuisine in {"막걸리", "전집", "파전"}:
+        terms.extend([*BAR_CANDIDATE_MATCH_TERMS, *TRADITIONAL_DRINKING_TERMS])
+    elif cuisine == "바":
+        terms.extend(["와인바", "칵테일바", "펍"])
+    elif cuisine in {"막걸리", "전집", "파전", "해물파전"}:
         terms.extend(["막걸리", "전집", "파전", "해물파전"])
+    elif cuisine in {"빵집", "베이커리", "빵"}:
+        terms.extend(["빵집", "베이커리", "제과", "제빵", "바게트", "크루아상", "소금빵", "케이크"])
     for term in FOOD_QUERY_TERMS:
         if cuisine in term or term in cuisine:
             terms.append(term)
@@ -996,7 +1014,13 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
         ]
         if value
     )
+    if cuisine in {"빵집", "베이커리", "빵"} and any(term in blob for term in BAKERY_EXCLUDE_TERMS):
+        return False
+    if cuisine == "바" and any(term in blob for term in ["식당", "분식", "한식", "중식", "일식", "고기", "냉면", "국밥"]):
+        return any(term in blob for term in ["와인바", "칵테일바", "펍"])
     if cuisine == "술집" and re.search(r"(?<!전)주점", blob):
+        return True
+    if cuisine == "바" and re.search(r"(^|[^가-힣A-Za-z])바($|[^가-힣A-Za-z])", blob):
         return True
     return any(term and term in blob for term in terms)
 
@@ -1020,7 +1044,7 @@ def build_public_final_answer(
     source_names = {str(item.get("source")) for item in recommendations if item.get("source")}
     if data_source_label == "Kakao Local API" or "Kakao Local API" in source_names:
         source_label = "Kakao Local API"
-        limitation = "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 주소, 거리 중심으로 보강 검색했습니다."
+        limitation = "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 주소, 거리 중심으로 보강 검색했습니다. 장소 링크는 추가 후기 확인용으로 제공합니다."
         missing_metric_label = "Kakao Local 미제공"
     else:
         source_label = "한국관광공사 TourAPI KorService2"
@@ -1059,7 +1083,7 @@ def build_public_final_answer(
         rating_text = _public_value(restaurant.get("rating"), missing_metric_label)
         review_text = _public_value(restaurant.get("review_count"), missing_metric_label)
         price_text = _public_value(restaurant.get("average_price"), missing_metric_label)
-        menu_fallback = "Kakao 장소 검색 키워드 정보" if restaurant.get("source") == "Kakao Local API" else "TourAPI 상세 메뉴 정보 없음"
+        menu_fallback = "Kakao Local 공식 API 미제공" if restaurant.get("source") == "Kakao Local API" else "TourAPI 상세 메뉴 정보 없음"
         lines.extend(
             [
                 f"{index}. {restaurant['name']} ({restaurant.get('cuisine') or '음식점'})",

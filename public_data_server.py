@@ -46,16 +46,23 @@ CUISINE_KEYWORDS = {
     "일식": ["일식", "초밥", "스시", "돈까스", "돈카츠", "우동", "라멘", "나베", "소바", "이자카야", "오마카세"],
     "중식": ["중식", "반점", "짜장", "자장", "짬뽕", "탕수육", "마라", "마라탕", "훠궈"],
     "분식": ["분식", "떡볶이", "김밥", "튀김", "라볶이", "순대"],
-    "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집", "베이커리", "빵", "케이크"],
+    "베이커리": ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크"],
+    "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집"],
     "고기": ["고기", "갈비", "삼겹", "구이", "장어", "불고기", "곱창", "막창", "족발", "보쌈", "치킨"],
     "양식": ["파스타", "피자", "스테이크", "브런치", "리조또", "양식", "버거", "햄버거", "샐러드"],
     "아시아식": ["쌀국수", "베트남", "태국", "타이", "인도", "커리", "카레", "아시아"],
     "해산물": ["회", "횟집", "해산물", "생선", "조개", "초밥"],
-    "술집": ["술집", "혼술", "한잔", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인", "와인바", "칵테일"],
+    "술집": ["술집", "혼술", "한잔", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인", "와인바", "칵테일", "바"],
 }
-BAR_DIRECT_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "막걸리", "전집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"]
-STRICT_FOOD_QUERIES = {"술집", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일"}
-KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "맥주", "이자카야", "막걸리", "전집", "와인바", "칵테일"]
+DRINKING_PLACE_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바", "칵테일", "비어", "beer"]
+TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
+BAR_ONLY_TERMS = ["와인바", "칵테일바", "바", "bar", "BAR", "펍"]
+BAKERY_TERMS = ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크", "bakery", "BAKERY"]
+BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
+STRICT_FOOD_QUERIES = {"술집", "바", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일", "칵테일바", "빵집", "베이커리", "빵"}
+KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바"]
+KAKAO_BAR_ONLY_KEYWORDS = ["와인바", "칵테일바", "바", "펍"]
+KAKAO_BAKERY_KEYWORDS = ["빵집", "베이커리", "제과점", "제빵소"]
 WEATHER_EXPECTATION_MATCH_TERMS = {
     "비": ["파전", "해물파전", "막걸리", "전집", "술집", "국밥", "찌개", "전골", "칼국수", "실내"],
     "눈": ["국밥", "탕", "찌개", "전골", "칼국수", "라멘", "우동", "실내"],
@@ -546,10 +553,11 @@ def _infer_kakao_cuisine(document: dict[str, Any], requested_keyword: str | None
             document.get("place_name"),
             document.get("category_name"),
             document.get("category_group_name"),
-            requested_keyword,
         ]
         if value
     )
+    if _has_bakery_signal(blob):
+        return "베이커리"
     if _has_bar_place_signal(blob):
         return "술집"
     for cuisine, keywords in CUISINE_KEYWORDS.items():
@@ -597,7 +605,8 @@ def _standardize_kakao_place(
         "rating": None,
         "review_count": None,
         "average_price": None,
-        "signature_menu": [requested_keyword] if requested_keyword else [],
+        "signature_menu": [],
+        "search_keyword": requested_keyword,
         "overview": f"Kakao Local category: {category_name}".strip(),
         "operation": {
             "open_time": None,
@@ -610,7 +619,7 @@ def _standardize_kakao_place(
         "modified_time": None,
         "place_url": place_url,
         "recommendation_reason": "Kakao Local API 장소 검색 결과의 위치, 카테고리, 거리 정보를 반영했습니다.",
-        "source_note": "Kakao Local API는 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하며 평점/리뷰/가격대는 제공하지 않습니다.",
+        "source_note": "Kakao Local API 공식 응답은 장소명, 주소, 카테고리, 전화번호, 거리, 장소 URL을 제공하며 평점/리뷰/가격대는 제공하지 않습니다. 장소 URL에서 사용자가 직접 추가 후기를 확인할 수 있습니다.",
     }
 
 
@@ -646,18 +655,34 @@ def _food_query_terms(food_query: str | None) -> list[str]:
         if term and term not in FOOD_QUERY_STOPWORDS and term not in cleaned_terms:
             cleaned_terms.append(term)
     if any(term in STRICT_FOOD_QUERIES for term in cleaned_terms):
-        priority_terms = ["술집", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "와인바", "칵테일"]
+        priority_terms = ["술집", "바", "와인바", "칵테일바", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "빵집", "베이커리", "빵"]
         return [term for term in priority_terms if term in cleaned_terms] + [
             term for term in cleaned_terms if term not in priority_terms
         ]
     return cleaned_terms
 
 
+def _has_strict_bar_signal(blob: str) -> bool:
+    if any(term in blob for term in BAR_ONLY_TERMS if term != "바"):
+        return True
+    return bool(re.search(r"(^|[^가-힣A-Za-z])바($|[^가-힣A-Za-z])", blob))
+
+
 def _has_bar_place_signal(blob: str) -> bool:
-    if any(term in blob for term in BAR_DIRECT_MATCH_TERMS):
+    if any(term in blob for term in [*DRINKING_PLACE_TERMS, *TRADITIONAL_DRINKING_TERMS]):
         return True
     # "주점" is a valid category term, but it appears inside "전주점" in branch names.
     return bool(re.search(r"(?<!전)주점", blob))
+
+
+def _has_traditional_drinking_signal(blob: str) -> bool:
+    return any(term in blob for term in TRADITIONAL_DRINKING_TERMS)
+
+
+def _has_bakery_signal(blob: str) -> bool:
+    if any(term in blob for term in BAKERY_EXCLUDE_TERMS):
+        return False
+    return any(term in blob for term in BAKERY_TERMS)
 
 
 def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> bool:
@@ -666,7 +691,14 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
         return True
     cuisine = str(restaurant.get("cuisine") or "")
     blob = _text_blob(restaurant)
-    if str(food_query or "").strip() == "술집":
+    requested = str(food_query or "").strip()
+    if requested == "바":
+        return _has_strict_bar_signal(blob)
+    if requested in {"빵집", "베이커리", "빵"}:
+        return _has_bakery_signal(blob)
+    if requested in {"막걸리", "전집", "파전", "해물파전"}:
+        return _has_traditional_drinking_signal(blob)
+    if requested == "술집":
         return _has_bar_place_signal(blob)
     return any(term == cuisine or term in blob for term in terms)
 
@@ -757,7 +789,7 @@ def _score_public_restaurant(
     if "저녁" in purpose and restaurant.get("cuisine") != "카페":
         score += 5
         reasons.append("카페보다 식사 후보에 가까움")
-    if any(term in purpose for term in ["혼술", "술자리"]) and _has_bar_place_signal(blob):
+    if any(term in purpose for term in ["혼술", "술자리"]) and (_has_bar_place_signal(blob) or _has_traditional_drinking_signal(blob)):
         score += 12
         reasons.append("술자리 목적과 직접 관련된 메뉴/업종 단서")
 
@@ -1045,6 +1077,12 @@ def search_kakao_local_places(
     requested = (cuisine or keyword or "맛집").strip()
     if requested == "술집":
         queries = KAKAO_BAR_KEYWORDS
+    elif requested == "바":
+        queries = KAKAO_BAR_ONLY_KEYWORDS
+    elif requested in {"빵집", "베이커리", "빵"}:
+        queries = KAKAO_BAKERY_KEYWORDS
+    elif requested in {"막걸리", "전집", "파전", "해물파전"}:
+        queries = [requested]
     else:
         queries = [requested]
 
@@ -1083,8 +1121,8 @@ def search_kakao_local_places(
             for place in places
             if place.get("distance_m") is None or int(place["distance_m"]) <= int(max_distance_m)
         ]
-    if cuisine == "술집":
-        places = [place for place in places if _matches_food_query(place, "술집")]
+    if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "막걸리", "전집", "파전", "해물파전"}:
+        places = [place for place in places if _matches_food_query(place, cuisine)]
 
     places.sort(
         key=lambda place: (
@@ -1124,7 +1162,7 @@ def search_kakao_local_places(
             "location_resolution": search_area.get("resolution_source"),
         },
         "unavailable_filters": ["rating", "review_count", "price_level"],
-        "data_limitations": "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 거리, 주소로만 보강 검색합니다.",
+        "data_limitations": "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않아 장소명, 카테고리, 거리, 주소로만 보강 검색합니다. 장소 URL은 추가 후기 확인용으로 제공합니다.",
         "count": len(places[: max(1, limit)]),
         "candidates": places[: max(1, limit)],
         "message": (
