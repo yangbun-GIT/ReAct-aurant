@@ -162,7 +162,7 @@ class AgenticPatternTraceTests(unittest.TestCase):
         self.assertEqual(search_event["action_input"]["area"], "전주 객사")
         self.assertEqual(search_event["action_input"]["max_price_level"], 2)
         self.assertEqual(search_event["action_input"]["min_rating"], 4.2)
-        self.assertEqual(search_event["action_input"]["min_review_count"], 100)
+        self.assertEqual(search_event["action_input"]["min_review_count"], 50)
         self.assertEqual(search_event["action_input"]["max_distance_m"], 1000)
 
 

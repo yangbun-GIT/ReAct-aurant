@@ -12,6 +12,7 @@ from public_data_server import (
     _matches_food_query,
     _is_jeonju_restaurant,
     _resolve_search_area,
+    _resolve_search_area_for_kakao_query,
     _score_public_restaurant,
     _standardize_kakao_place,
     _standardize_restaurant,
@@ -55,12 +56,12 @@ class RequestParsingTests(unittest.TestCase):
         parsed = parse_user_request("전주 객사 일본식라면 추천")
 
         self.assertIsNone(parsed.max_price_level)
-        self.assertEqual(parsed.min_rating, 3.7)
-        self.assertEqual(parsed.min_review_count, 30)
+        self.assertEqual(parsed.min_rating, 4.0)
+        self.assertEqual(parsed.min_review_count, 20)
         self.assertNotIn("가격대", parsed.missing_conditions)
         self.assertFalse(any(condition.startswith("최대가격대=") for condition in parsed.extracted_conditions))
-        self.assertIn("최소평점=3.7", parsed.extracted_conditions)
-        self.assertIn("최소리뷰수=30", parsed.extracted_conditions)
+        self.assertIn("최소평점=4.0", parsed.extracted_conditions)
+        self.assertIn("최소리뷰수=20", parsed.extracted_conditions)
 
     def test_parse_explicit_price_preference_only_when_user_requests_it(self) -> None:
         parsed = parse_user_request("전주 객사 일본식라면 추천 너무 비싸지 않게")
@@ -106,6 +107,11 @@ class RequestParsingTests(unittest.TestCase):
             "전주 팔복동 백반 맛집 추천": "전주 팔복동",
             "전주 에코시티 가족 식사 추천": "전주 송천동",
             "전주 전동 근처 한식 추천": "전주 풍남동",
+            "전주 도청 근처 점심 추천": "전주 전북도청",
+            "전주 전주대 근처 파스타 추천": "전주 전주대",
+            "전주 비전대 근처 카페 추천": "전주 비전대",
+            "전주 병무청 근처 밥집 추천": "전주 노송동",
+            "전북대 병원 근처 한식 추천": "전주 전북대병원",
         }
 
         for query, expected_location in cases.items():
@@ -126,6 +132,39 @@ class RequestParsingTests(unittest.TestCase):
 
                     self.assertEqual(parsed.location, f"전주 {expected_area}")
                     self.assertFalse(any(issue["type"] == "unsupported_or_unresolved_location" for issue in guard["issues"]))
+
+    def test_kakao_location_resolution_prefers_kakao_then_local_alias(self) -> None:
+        captured_queries: list[str] = []
+
+        def fake_kakao_request(path: str, params: dict[str, object]) -> dict[str, object]:
+            captured_queries.append(str(params["query"]))
+            if str(params["query"]) == "도청":
+                return {
+                    "status": "ok",
+                    "payload": {
+                        "documents": [
+                            {
+                                "id": "do-office",
+                                "place_name": "전북특별자치도청",
+                                "road_address_name": "전북특별자치도 전주시 완산구 효자로 225",
+                                "x": "127.108976712012",
+                                "y": "35.8201963639598",
+                                "place_url": "http://place.map.kakao.com/20999654",
+                            }
+                        ]
+                    },
+                }
+            return {"status": "ok", "payload": {"documents": []}}
+
+        with patch("public_data_server._kakao_request", side_effect=fake_kakao_request):
+            kakao_area = _resolve_search_area_for_kakao_query("전주 도청")
+            local_area = _resolve_search_area_for_kakao_query("전주 전북대 신정문")
+
+        self.assertIn("도청", captured_queries)
+        self.assertEqual(kakao_area["resolution_source"], "Kakao Local API keyword search")
+        self.assertAlmostEqual(kakao_area["longitude"], 127.108976712012)
+        self.assertEqual(local_area["name"], "전북대 신정문")
+        self.assertEqual(local_area["resolution_source"], "local_jeonju_gazetteer")
 
     def test_parse_freeform_jeonju_commercial_area_and_food(self) -> None:
         parsed = parse_user_request("전주 웨리단길 파스타 맛집 추천해줘")
@@ -155,13 +194,13 @@ class RequestParsingTests(unittest.TestCase):
 
     def test_parse_diverse_food_types_beyond_basic_categories(self) -> None:
         cases = {
-            "전주 신시가지 마라탕 맛집 추천": ("전주 효자동", "마라탕"),
+            "전주 신시가지 마라탕 맛집 추천": ("전주 전북도청", "마라탕"),
             "전주 한옥마을 디저트 맛집 추천": ("전주 한옥마을", "디저트"),
             "전주 송천동 초밥 맛집 추천": ("전주 송천동", "초밥"),
             "전주 웨리단길 파스타 맛집 추천": ("전주 웨리단길", "파스타"),
             "전주 객사 해산물 맛집 추천": ("전주 객사", "해산물"),
             "전주 객사 일본식라면 맛집 추천": ("전주 객사", "일본식라면"),
-            "전주 신시가지 양꼬치 맛집 추천": ("전주 효자동", "양꼬치"),
+            "전주 신시가지 양꼬치 맛집 추천": ("전주 전북도청", "양꼬치"),
             "전주 한옥마을 브런치카페 추천": ("전주 한옥마을", "브런치카페"),
         }
 
@@ -237,7 +276,7 @@ class RequestParsingTests(unittest.TestCase):
     def test_parse_bar_place_intent_defaults_to_drinking_purpose(self) -> None:
         parsed = parse_user_request("비오는 날 신시가지 술집 추천")
 
-        self.assertEqual(parsed.location, "전주 효자동")
+        self.assertEqual(parsed.location, "전주 전북도청")
         self.assertEqual(parsed.cuisine, "술집")
         self.assertEqual(parsed.purpose, "술자리")
         self.assertNotIn("방문 목적", parsed.missing_conditions)
@@ -260,7 +299,7 @@ class RequestParsingTests(unittest.TestCase):
         cases = {
             "객사 맛집 비 오는 날": "전주 객사",
             "한옥마을 비 오는 날 디저트 추천": "전주 한옥마을",
-            "신시가지 비오는날 마라탕 추천": "전주 효자동",
+            "신시가지 비오는날 마라탕 추천": "전주 전북도청",
         }
 
         for query, expected_location in cases.items():
@@ -761,6 +800,17 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertFalse(_public_candidate_matches_cuisine(candidate, "초밥"))
+
+    def test_public_candidate_match_does_not_treat_parking_text_as_cafe(self) -> None:
+        candidate = {
+            "name": "사랑오리",
+            "cuisine": "한식",
+            "address": "전북특별자치도 전주시 완산구 쑥고개로 247",
+            "overview": "오리요리 전문점이며 주차는 식당 앞에 할 수 있다.",
+            "signature_menu": ["오리주물럭"],
+        }
+
+        self.assertFalse(_public_candidate_matches_cuisine(candidate, "카페"))
 
     def test_public_candidate_match_does_not_expand_specific_sushi_to_all_japanese_food(self) -> None:
         candidate = {

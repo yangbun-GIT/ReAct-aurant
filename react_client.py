@@ -215,7 +215,7 @@ BAR_INTENT_TERMS = ["술집", "주점", "혼술", "한잔", "술자리", "포차
 BAR_CANDIDATE_MATCH_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "맥주", "소주", "와인바", "칵테일바", "칵테일", "이자카야"]
 TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
 BAKERY_INTENT_TERMS = ["빵집", "베이커리", "빵"]
-STRICT_DESSERT_CAFE_TERMS = ["디저트카페", "디저트 카페"]
+STRICT_DESSERT_CAFE_TERMS = ["카페", "디저트카페", "디저트 카페"]
 ALCOHOL_INTENT_TERMS = [*BAR_INTENT_TERMS, *TRADITIONAL_DRINKING_TERMS]
 BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
 STRICT_PUBLIC_CUISINE_TERMS = set(ALCOHOL_INTENT_TERMS) | set(BAKERY_INTENT_TERMS) | set(STRICT_DESSERT_CAFE_TERMS)
@@ -227,8 +227,8 @@ class ParsedRequest(BaseModel):
     requested_weather: str | None = None
     purpose: str = "일반 식사"
     max_price_level: int | None = None
-    min_rating: float = 3.7
-    min_review_count: int = 30
+    min_rating: float = 4.0
+    min_review_count: int = 20
     max_distance_m: int = 1000
     limit: int = 3
     extracted_conditions: list[str] = Field(default_factory=list)
@@ -808,8 +808,25 @@ def parse_user_request(query: str) -> ParsedRequest:
     if explicit_price:
         conditions.append(f"최대가격대={max_price_level}")
 
-    min_rating = 4.2 if "리뷰" in query or "평점" in query or "좋은" in query else 3.7
-    min_review_count = 100 if "리뷰" in query else 30
+    explicit_quality = _contains_any(
+        query,
+        [
+            "리뷰 좋은",
+            "리뷰가 좋은",
+            "후기 좋은",
+            "후기가 좋은",
+            "평점 좋은",
+            "평점이 좋은",
+            "평점 높은",
+            "평점이 높은",
+            "리뷰 많은",
+            "리뷰가 많은",
+            "후기 많은",
+            "후기가 많은",
+        ],
+    )
+    min_rating = 4.2 if explicit_quality else 4.0
+    min_review_count = 50 if _contains_any(query, ["리뷰", "후기"]) else 20
     if "10000" in query:
         min_review_count = 10000
     conditions.append(f"최소평점={min_rating}")
@@ -1870,8 +1887,8 @@ async def run_agent(
     query: str,
     trace_path: Path | None,
     use_llm: bool,
-    data_source: Literal["local", "public", "auto", "kakao"] = "auto",
-    enrich_kakao_place_metrics: bool = False,
+    data_source: Literal["kakao", "free"] = "kakao",
+    enrich_kakao_place_metrics: bool = True,
 ) -> str:
     load_dotenv()
     trace = TraceLogger(trace_path)
@@ -1932,14 +1949,16 @@ async def run_agent(
                 errlog=server_errlog,
             )
         )
-        gourmet_read, gourmet_write = await stack.enter_async_context(
-            stdio_client(
-                StdioServerParameters(command=sys.executable, args=["gourmet_db_server.py"], env=env),
-                errlog=server_errlog,
+        gourmet_read = gourmet_write = None
+        if data_source == "free":
+            gourmet_read, gourmet_write = await stack.enter_async_context(
+                stdio_client(
+                    StdioServerParameters(command=sys.executable, args=["gourmet_db_server.py"], env=env),
+                    errlog=server_errlog,
+                )
             )
-        )
         public_read = public_write = None
-        if data_source in {"public", "auto", "kakao"}:
+        if data_source in {"free", "kakao"}:
             public_read, public_write = await stack.enter_async_context(
                 stdio_client(
                     StdioServerParameters(command=sys.executable, args=["public_data_server.py"], env=env),
@@ -1948,19 +1967,21 @@ async def run_agent(
             )
 
         env_session = await stack.enter_async_context(ClientSession(env_read, env_write))
-        gourmet_session = await stack.enter_async_context(ClientSession(gourmet_read, gourmet_write))
         await env_session.initialize()
-        await gourmet_session.initialize()
+        gourmet_session: ClientSession | None = None
+        if gourmet_read is not None and gourmet_write is not None:
+            gourmet_session = await stack.enter_async_context(ClientSession(gourmet_read, gourmet_write))
+            await gourmet_session.initialize()
         public_session: ClientSession | None = None
         if public_read is not None and public_write is not None:
             public_session = await stack.enter_async_context(ClientSession(public_read, public_write))
             await public_session.initialize()
 
         env_client = MCPToolClient(env_session, "env_context_server.py", trace)
-        gourmet_client = MCPToolClient(gourmet_session, "gourmet_db_server.py", trace)
+        gourmet_client = MCPToolClient(gourmet_session, "gourmet_db_server.py", trace) if gourmet_session else None
         public_client = MCPToolClient(public_session, "public_data_server.py", trace) if public_session else None
         env_tools = await env_client.list_tools()
-        gourmet_tools = await gourmet_client.list_tools()
+        gourmet_tools = await gourmet_client.list_tools() if gourmet_client is not None else []
         public_tools: list[str] = []
         if public_client is not None:
             public_tools = await public_client.list_tools()
@@ -1991,28 +2012,23 @@ async def run_agent(
             }
         ]
         if public_client is not None:
+            public_tool_names = (
+                ["search_kakao_local_places", "extract_kakao_place_metrics", "rank_tourapi_restaurants"]
+                if data_source == "kakao"
+                else ["search_tourapi_restaurants", "get_tourapi_restaurant_detail", "rank_tourapi_restaurants"]
+            )
             selected_tools.append(
                 {
                     "server": "public_data_server.py",
-                    "tools": [
-                        tool
-                        for tool in [
-                            "search_kakao_local_places",
-                            "extract_kakao_place_metrics",
-                            "search_tourapi_restaurants",
-                            "get_tourapi_restaurant_detail",
-                            "rank_tourapi_restaurants",
-                        ]
-                        if tool in public_tools
-                    ],
+                    "tools": [tool for tool in public_tool_names if tool in public_tools],
                     "reason": (
-                        "Kakao Local API를 1차 장소 검색 도구로 사용하고 랭킹을 수행합니다."
+                        "Kakao Local API와 Kakao 장소 링크 지표를 기준으로 후보 검색과 랭킹을 수행합니다."
                         if data_source == "kakao"
-                        else "TourAPI 공공데이터 후보를 기본 검색하고, 필요한 경우 Kakao Local API로 보강합니다."
+                        else "무료 모드로 TourAPI 공공데이터 후보를 검색하고, 부족하면 로컬 샘플 데이터셋으로 대체합니다."
                     ),
                 }
             )
-        if data_source in {"local", "auto"}:
+        if data_source == "free" and gourmet_client is not None:
             selected_tools.append(
                 {
                     "server": "gourmet_db_server.py",
@@ -2105,7 +2121,7 @@ async def run_agent(
                             "limit": 30,
                         },
                         mcp_server="public_data_server.py",
-                        thought_summary="Thought: 사용자가 Kakao Local API 우선 사용을 활성화했으므로 장소 후보와 위치 기준을 Kakao Local API로 먼저 조회합니다.",
+                        thought_summary="Thought: 카카오 모드이므로 장소 후보와 위치 기준을 Kakao Local API로 먼저 조회합니다.",
                     )
                 )
                 messages.append({"role": "tool", "content": f"Observation: {kakao_search_observation.summary}"})
@@ -2257,7 +2273,7 @@ async def run_agent(
                     "severity": "warning",
                     "message": "요청한 음식 종류와 정확히 일치하는 공공데이터 후보가 부족합니다.",
                     "recovery": (
-                        "TourAPI 후보는 넓게 수집하되 최종 추천에서는 술집 의도를 엄격히 유지하고, 가능하면 Kakao Local API 보강 검색을 시도합니다."
+                        "무료 모드에서는 Kakao API를 호출하지 않으므로 TourAPI 후보는 넓게 수집하되 최종 추천에서 요청 업종 의도를 엄격히 유지합니다."
                         if strict_food_requested
                         else "음식 종류 필터를 완화하고 전주 음식점 후보 전체를 거리와 상세정보 기준으로 다시 비교합니다."
                     ),
@@ -2317,6 +2333,7 @@ async def run_agent(
                         not recommendations
                         and parsed.cuisine in STRICT_PUBLIC_CUISINE_TERMS
                         and "search_kakao_local_places" in public_tools
+                        and data_source == "kakao"
                     ):
                         kakao_observation = await public_client.call_tool(
                             ToolAction(
@@ -2462,6 +2479,17 @@ async def run_agent(
                 observation=public_search_payload,
                 messages_count=len(messages),
             )
+
+        if gourmet_client is None:
+            answer = "추천 후보를 확보하지 못했습니다. 카카오 모드에서는 Kakao Local API와 GPT API만 사용하므로, Kakao API 키와 검색 조건을 확인해 주세요."
+            trace.write(
+                agent_name="Coordinator Agent",
+                pattern="Final Answer",
+                thought_summary="카카오 모드에서 후보가 없어 로컬 샘플 fallback 없이 종료합니다.",
+                messages_count=len(messages),
+                final_answer=answer,
+            )
+            return answer
 
         max_steps = 5
         search_payload: dict[str, Any] | None = None
@@ -2659,16 +2687,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trace", default="logs/trace_jeonju.jsonl", help="Trace JSONL 저장 경로")
     parser.add_argument(
         "--data-source",
-        choices=["auto", "public", "local", "kakao"],
-        default="auto",
-        help="맛집 후보 데이터 소스입니다. kakao는 Kakao Local API를 1차 장소 검색 도구로 사용합니다.",
+        choices=["kakao", "free"],
+        default="kakao",
+        help="맛집 후보 데이터 소스입니다. kakao는 Kakao Local API+GPT, free는 TourAPI+로컬 샘플만 사용합니다.",
     )
     parser.add_argument("--use-llm", action="store_true", help="GPT Agent 모드를 명시적으로 사용합니다. 기본값은 OPENAI_API_KEY가 있으면 자동 사용입니다.")
     parser.add_argument("--no-llm", action="store_true", help="GPT Agent 모드를 끄고 규칙 기반 fallback으로 실행합니다.")
     parser.add_argument(
         "--enrich-kakao-place-metrics",
         action="store_true",
-        help="Kakao 장소 링크 페이지에서 평점/리뷰 수/가격대 지표 보강을 시도합니다. 실패하면 기존 Kakao Local 메타데이터 검증으로 fallback합니다.",
+        default=True,
+        help="Kakao 장소 링크 페이지에서 평점/리뷰 수/가격대 지표 보강을 시도합니다. 카카오 모드에서는 기본 활성화됩니다.",
     )
     return parser.parse_args()
 

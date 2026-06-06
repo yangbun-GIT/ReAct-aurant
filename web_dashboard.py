@@ -24,7 +24,7 @@ RUNS_ROOT = ROOT / "logs" / "web_runs"
 SESSION_COOKIE = "reactaurant_admin_session"
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 DEFAULT_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
-VALID_DATA_SOURCES = {"auto", "public", "local", "kakao"}
+VALID_DATA_SOURCES = {"kakao", "free"}
 VALID_LLM_MODES = {"auto", "use", "no"}
 
 
@@ -202,12 +202,10 @@ def infer_effective_data_source(data_source: str, events: list[dict[str, Any]], 
         effective = "TourAPI"
     elif used_local:
         effective = "local sample"
-    elif data_source == "public":
-        effective = "TourAPI"
-    elif data_source == "local":
-        effective = "local sample"
     elif data_source == "kakao":
         effective = "Kakao Local"
+    elif data_source == "free":
+        effective = "TourAPI/local sample"
     else:
         effective = "not resolved"
 
@@ -235,7 +233,7 @@ def enrich_run_record(record: dict[str, Any]) -> dict[str, Any]:
     events = record.get("trace_events", [])
     final_answer = str(record.get("final_answer", ""))
     record["effective_data_source"] = record.get("effective_data_source") or infer_effective_data_source(
-        str(record.get("data_source", "auto")), events, final_answer
+        str(record.get("data_source", "kakao")), events, final_answer
     )
     record["effective_llm_mode"] = record.get("effective_llm_mode") or infer_effective_llm_mode(
         str(record.get("llm_mode", "auto")), events
@@ -362,7 +360,7 @@ def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str, kakao_p
         raise ValueError("지원하지 않는 LLM 모드입니다.")
     if not query.strip():
         raise ValueError("질문을 입력해야 합니다.")
-    effective_kakao_place_enrichment = bool(kakao_place_enrichment and data_source in {"auto", "public", "kakao"})
+    effective_kakao_place_enrichment = data_source == "kakao"
 
     created_at = datetime.now().isoformat(timespec="seconds")
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
@@ -1103,10 +1101,8 @@ def render_dashboard() -> str:
             <div class="field">
               <label for="dataSource">데이터 소스</label>
               <select id="dataSource" name="dataSource">
-                <option value="auto">auto</option>
-                <option value="kakao">kakao</option>
-                <option value="public">public</option>
-                <option value="local">local</option>
+                <option value="kakao">Kakao API + GPT</option>
+                <option value="free">무료 모드 (TourAPI + 로컬)</option>
               </select>
             </div>
             <div class="field">
@@ -1119,20 +1115,11 @@ def render_dashboard() -> str:
             </div>
           </div>
           <div class="toggle-field">
-            <label class="toggle-label" for="kakaoEnabled">
-              <input id="kakaoEnabled" name="kakaoEnabled" type="checkbox" checked>
+            <label class="toggle-label">
+              <input type="checkbox" checked disabled>
               <span>
-                Kakao Local API 우선 사용
-                <span class="toggle-help">전주시 음식점 후보와 위치 검색을 Kakao Local API 기준으로 실행합니다.</span>
-              </span>
-            </label>
-          </div>
-          <div class="toggle-field">
-            <label class="toggle-label" for="kakaoPlaceEnrichment">
-              <input id="kakaoPlaceEnrichment" name="kakaoPlaceEnrichment" type="checkbox" checked>
-              <span>
-                Kakao 장소 링크 지표 보강
-                <span class="toggle-help">장소 패널과 페이지에서 평점·후기 수·가격대 추출을 시도하고, 관측되지 않은 값은 생성하지 않습니다.</span>
+                Kakao 장소 링크 지표 기본 반영
+                <span class="toggle-help">카카오 모드에서는 장소 패널과 페이지에서 평점·후기 수·가격대 추출을 기본 시도하고, 관측되지 않은 값은 생성하지 않습니다.</span>
               </span>
             </label>
           </div>
@@ -1488,9 +1475,9 @@ def render_dashboard() -> str:
       try {{
         const payload = {{
           query: document.getElementById('query').value.trim(),
-          data_source: document.getElementById('kakaoEnabled').checked ? 'kakao' : document.getElementById('dataSource').value,
+          data_source: document.getElementById('dataSource').value,
           llm_mode: document.getElementById('llmMode').value,
-          kakao_place_enrichment: document.getElementById('kakaoPlaceEnrichment').checked
+          kakao_place_enrichment: true
         }};
         const response = await fetch('/api/run', {{
           method: 'POST',
@@ -1750,7 +1737,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = self._read_json_body()
                 record = run_agent_for_dashboard(
                     query=str(payload.get("query", "")),
-                    data_source=str(payload.get("data_source", "auto")),
+                    data_source=str(payload.get("data_source", "kakao")),
                     llm_mode=str(payload.get("llm_mode", "auto")),
                     kakao_place_enrichment=bool(payload.get("kakao_place_enrichment", True)),
                 )

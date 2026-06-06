@@ -19,12 +19,11 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("실행 로그", html)
         self.assertIn("Trace JSONL", html)
         self.assertIn("LLM 모드", html)
-        self.assertIn("Kakao Local API 우선 사용", html)
-        self.assertIn("kakaoEnabled", html)
-        self.assertIn('id="kakaoEnabled" name="kakaoEnabled" type="checkbox" checked', html)
-        self.assertIn("Kakao 장소 링크 지표 보강", html)
-        self.assertIn("kakaoPlaceEnrichment", html)
-        self.assertIn('id="kakaoPlaceEnrichment" name="kakaoPlaceEnrichment" type="checkbox" checked', html)
+        self.assertIn("Kakao API + GPT", html)
+        self.assertIn("무료 모드 (TourAPI + 로컬)", html)
+        self.assertIn("Kakao 장소 링크 지표 기본 반영", html)
+        self.assertNotIn("kakaoEnabled", html)
+        self.assertNotIn("kakaoPlaceEnrichment", html)
         self.assertIn('placeholder="전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘.', html)
         self.assertIn('textarea::placeholder', html)
         self.assertNotIn('name="query">전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘.', html)
@@ -88,9 +87,9 @@ class WebDashboardTests(unittest.TestCase):
                     "run_id": "test_001",
                     "created_at": "2026-06-06T12:00:00",
                     "query": "전주 객사 맛집 추천",
-                    "data_source": "local",
+                    "data_source": "free",
                     "llm_mode": "no",
-                    "effective_data_source": "local → local sample",
+                    "effective_data_source": "free → local sample",
                     "effective_llm_mode": "no → rule fallback",
                     "returncode": 0,
                     "trace_events": [{"step": 1}],
@@ -104,7 +103,7 @@ class WebDashboardTests(unittest.TestCase):
 
                 self.assertEqual(saved["query"], "전주 객사 맛집 추천")
                 self.assertEqual(index[0]["run_id"], "test_001")
-                self.assertEqual(index[0]["effective_data_source"], "local → local sample")
+                self.assertEqual(index[0]["effective_data_source"], "free → local sample")
                 self.assertEqual(index[0]["effective_llm_mode"], "no → rule fallback")
                 self.assertEqual(index[0]["event_count"], 1)
             finally:
@@ -128,7 +127,7 @@ class WebDashboardTests(unittest.TestCase):
                 with patch("web_dashboard.subprocess.run", side_effect=fake_run):
                     record = web_dashboard.run_agent_for_dashboard(
                         query="전주 객사 맛집 추천",
-                        data_source="local",
+                        data_source="free",
                         llm_mode="no",
                     )
 

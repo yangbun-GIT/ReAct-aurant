@@ -49,7 +49,7 @@ CUISINE_KEYWORDS = {
     "분식": ["분식", "떡볶이", "김밥", "튀김", "라볶이", "순대"],
     "베이커리": ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크"],
     "디저트 카페": ["디저트카페", "디저트 카페", "디저트", "빙수", "아이스크림", "케이크"],
-    "카페": ["카페", "커피", "라떼", "디저트", "차", "찻집"],
+    "카페": ["카페", "커피", "라떼", "디저트", "찻집"],
     "고기": ["고기", "고기집", "고깃집", "육류", "육류고기", "갈비", "삼겹", "삼겹살", "구이", "장어", "불고기", "곱창", "막창", "족발", "보쌈", "치킨"],
     "이탈리안": ["이탈리안", "이탈리아", "파스타", "피자", "리조또"],
     "프렌치": ["프렌치", "프랑스"],
@@ -86,7 +86,7 @@ TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
 BAR_ONLY_TERMS = ["와인바", "칵테일바", "바", "bar", "BAR", "펍"]
 BAKERY_TERMS = ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크", "bakery", "BAKERY"]
 BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
-STRICT_FOOD_QUERIES = {"술집", "바", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일", "칵테일바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페"}
+STRICT_FOOD_QUERIES = {"술집", "바", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일", "칵테일바", "빵집", "베이커리", "빵", "카페", "디저트카페", "디저트 카페"}
 KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바"]
 KAKAO_BAR_ONLY_KEYWORDS = ["와인바", "칵테일바", "바", "펍"]
 KAKAO_BAKERY_KEYWORDS = ["빵집", "베이커리", "제과점", "제빵소"]
@@ -486,10 +486,19 @@ def _resolve_search_area_for_query(
 
 
 def _resolve_search_area_for_kakao_query(area: str | None, near_gaeksa: bool = False) -> dict[str, Any] | None:
+    if near_gaeksa:
+        fixed_area = _resolve_search_area(area, near_gaeksa=True)
+        if fixed_area is not None:
+            return {**fixed_area, "resolution_source": fixed_area.get("resolution_source", "Jeonju gazetteer")}
+
+    kakao_area = _resolve_search_area_from_kakao(area)
+    if kakao_area is not None:
+        return kakao_area
+
     fixed_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
     if fixed_area is not None:
         return {**fixed_area, "resolution_source": fixed_area.get("resolution_source", "Jeonju gazetteer")}
-    return _resolve_search_area_from_kakao(area)
+    return None
 
 
 def _distance_m(
@@ -997,7 +1006,7 @@ def _food_query_terms(food_query: str | None) -> list[str]:
         if term and term not in FOOD_QUERY_STOPWORDS and term not in cleaned_terms:
             cleaned_terms.append(term)
     if any(term in STRICT_FOOD_QUERIES for term in cleaned_terms):
-        priority_terms = ["술집", "바", "와인바", "칵테일바", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페"]
+        priority_terms = ["술집", "바", "와인바", "칵테일바", "막걸리", "전집", "파전", "해물파전", "이자카야", "포차", "호프", "펍", "맥주", "빵집", "베이커리", "빵", "카페", "디저트카페", "디저트 카페"]
         return [term for term in priority_terms if term in cleaned_terms] + [
             term for term in cleaned_terms if term not in priority_terms
         ]
@@ -1040,6 +1049,8 @@ def _matches_food_query(restaurant: dict[str, Any], food_query: str | None) -> b
         return _has_bakery_signal(blob)
     if requested in {"디저트카페", "디저트 카페"}:
         return any(term in blob for term in ["디저트카페", "디저트 카페", "빙수", "아이스크림", "케이크"])
+    if requested == "카페":
+        return any(term in blob for term in ["카페", "커피", "라떼", "찻집", "브런치", "디저트"])
     if requested in {"막걸리", "전집", "파전", "해물파전"}:
         return _has_traditional_drinking_signal(blob)
     if requested == "술집":
