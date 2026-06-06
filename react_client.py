@@ -221,9 +221,9 @@ class ParsedRequest(BaseModel):
     cuisine: str | None = None
     requested_weather: str | None = None
     purpose: str = "일반 식사"
-    max_price_level: int = 2
-    min_rating: float = 4.2
-    min_review_count: int = 100
+    max_price_level: int | None = None
+    min_rating: float = 3.7
+    min_review_count: int = 30
     max_distance_m: int = 1000
     limit: int = 3
     extracted_conditions: list[str] = Field(default_factory=list)
@@ -782,18 +782,17 @@ def parse_user_request(query: str) -> ParsedRequest:
         missing_conditions.append("방문 목적")
     conditions.append(f"목적={purpose}")
 
-    max_price_level = 2
+    max_price_level: int | None = None
     explicit_price = _contains_any(query, ["아주 저렴", "저렴", "비싸", "가성비", "부담", "가격", "비싼"])
     if "아주 저렴" in query or "저렴" in query:
         max_price_level = 1
     elif "비싸" in query or "가성비" in query or "부담" in query:
         max_price_level = 2
-    if not explicit_price:
-        missing_conditions.append("가격대")
-    conditions.append(f"최대가격대={max_price_level}")
+    if explicit_price:
+        conditions.append(f"최대가격대={max_price_level}")
 
-    min_rating = 4.2 if "리뷰" in query or "평점" in query or "좋은" in query else 4.0
-    min_review_count = 100 if "리뷰" in query else 50
+    min_rating = 4.2 if "리뷰" in query or "평점" in query or "좋은" in query else 3.7
+    min_review_count = 100 if "리뷰" in query else 30
     if "10000" in query:
         min_review_count = 10000
     conditions.append(f"최소평점={min_rating}")
@@ -855,7 +854,7 @@ def build_ranking_policy(
         "weather_hints": weather_hints,
         "weather_expectation_note": WEATHER_EXPECTATION_NOTES.get(parsed.requested_weather or ""),
         "preferred_cuisines": profile.get("preferred_cuisines", []),
-        "preferred_price_level": profile.get("preferred_price_level", parsed.max_price_level),
+        "preferred_price_level": parsed.max_price_level,
         "target_location": parsed.location,
         "location_strictness": "strict",
     }
@@ -869,7 +868,7 @@ def reflect_recommendations(
     warnings: list[str] = []
 
     for candidate in ranked_candidates:
-        if int(candidate["price_level"]) > parsed.max_price_level:
+        if parsed.max_price_level is not None and int(candidate["price_level"]) > parsed.max_price_level:
             warnings.append(f"{candidate['name']}: 가격대가 높아 제외했습니다.")
             continue
         if int(candidate["review_count"]) < parsed.min_review_count:
@@ -1157,6 +1156,10 @@ def build_public_final_answer(
         kakao_metric_observed=kakao_metric_observed,
     )
     profile_notes = list(profile.get("notes", []))
+    if parsed.max_price_level is not None:
+        price_note = "가격 부담이 낮은 곳"
+        if price_note not in profile_notes:
+            profile_notes.append(price_note)
     if unsupported_conditions:
         profile_notes = [
             note
@@ -1189,7 +1192,7 @@ def build_public_final_answer(
             lines.insert(-1, feedback)
 
     if not recommendations:
-        lines.append("공공데이터 후보를 확보하지 못했습니다.")
+        lines.append("조건을 충족하는 추천 후보를 확보하지 못했습니다.")
         lines.append("")
 
     for index, restaurant in enumerate(recommendations, start=1):
@@ -1476,11 +1479,11 @@ def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest
     failed: list[str] = []
     if checks.get("rating") is False:
         failed.append(f"평점 {rating} < 최소 {parsed.min_rating}")
-    elif rating is None and parsed.min_rating >= 4.2:
+    elif rating is None:
         failed.append(f"평점 미관측 < 최소 {parsed.min_rating} 조건 검증 불가")
     if checks.get("review_count") is False:
         failed.append(f"리뷰 수 {review_count} < 최소 {parsed.min_review_count}")
-    elif review_count is None and parsed.min_review_count >= 100:
+    elif review_count is None:
         failed.append(f"리뷰 수 미관측 < 최소 {parsed.min_review_count} 조건 검증 불가")
     if checks.get("price_level") is False:
         failed.append(f"가격대 {price_level} > 최대 {parsed.max_price_level}")
@@ -1659,6 +1662,10 @@ async def enrich_kakao_candidates_with_place_metrics(
         judgment = judgment_by_url.get(_normalize_kakao_place_url(candidate.get("place_url")))
         if judgment:
             candidate["place_metric_judgment"] = judgment
+            reason = str(judgment.get("reason") or "장소 링크 지표 관측")
+            if judgment.get("meets_conditions") is False:
+                excluded.append(f"{candidate.get('name')}: {reason}")
+                continue
             if judgment.get("status") == "observed":
                 observed_count += 1
                 if judgment.get("rating") is not None:
@@ -1668,18 +1675,14 @@ async def enrich_kakao_candidates_with_place_metrics(
                 if judgment.get("price_level") is not None:
                     candidate["price_level"] = judgment.get("price_level")
                     candidate["average_price"] = f"가격대 {judgment.get('price_level')}"
-                reason = str(judgment.get("reason") or "장소 링크 지표 관측")
                 candidate.setdefault("score_reasons", [])
                 candidate["metric_enrichment_note"] = reason
-                if judgment.get("meets_conditions") is False:
-                    excluded.append(f"{candidate.get('name')}: {reason}")
-                    continue
         enriched.append(candidate)
 
-    if observed_count == 0:
-        return enriched, "장소 링크 보강을 시도했지만 평점/리뷰 수/가격대 지표를 확인하지 못해 기존 Kakao Local 공식 메타데이터 검증으로 fallback했습니다."
     if not enriched:
         return [], f"장소 링크 지표 보강 결과 모든 후보가 요청 조건을 충족하지 못했습니다. 제외: {'; '.join(excluded[:5])}"
+    if observed_count == 0:
+        return enriched, "장소 링크 보강을 시도했지만 평점/리뷰 수 지표를 확인하지 못한 후보는 추천에서 제외하고, 조건 검증이 가능한 후보만 유지했습니다."
     if excluded:
         return enriched, f"장소 링크 지표 보강으로 조건 미달 후보를 제외했습니다. 제외: {'; '.join(excluded[:5])}"
     return enriched, f"장소 링크 지표 보강으로 {observed_count}개 후보의 평점/리뷰 수/가격대 조건을 확인했습니다."

@@ -24,15 +24,15 @@ USER_PROFILES: dict[str, dict[str, Any]] = {
         "user_id": "default",
         "preferred_cuisines": ["한식", "일식", "양식"],
         "avoid_cuisines": [],
-        "preferred_price_level": 2,
+        "preferred_price_level": None,
         "visit_purposes": ["친구와 저녁", "대화하기 좋은 곳"],
-        "notes": ["너무 비싸지 않은 곳", "리뷰가 좋은 곳", "걷기 부담 없는 거리"],
+        "notes": ["리뷰가 좋은 곳", "걷기 부담 없는 거리"],
     }
 }
 
 
 PROFILE_MEMORY: dict[str, list[str]] = {
-    "default": ["친구와 저녁 식사에는 가격대가 중간 이하이고 리뷰가 많은 곳을 선호합니다."]
+    "default": ["친구와 저녁 식사에는 리뷰가 많은 곳과 걷기 부담 없는 거리를 선호합니다."]
 }
 
 

@@ -21,6 +21,7 @@ from react_client import (
     _observed_metric_judgment,
     build_public_final_answer,
     build_ranking_policy,
+    enrich_kakao_candidates_with_place_metrics,
     evaluate_input_guard,
     parse_llm_json,
     parse_user_request,
@@ -43,6 +44,23 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.purpose, "친구와 저녁")
         self.assertEqual(parsed.limit, 3)
         self.assertIn("지역=전주 객사", parsed.extracted_conditions)
+
+    def test_parse_default_quality_filters_without_default_price_preference(self) -> None:
+        parsed = parse_user_request("전주 객사 일본식라면 추천")
+
+        self.assertIsNone(parsed.max_price_level)
+        self.assertEqual(parsed.min_rating, 3.7)
+        self.assertEqual(parsed.min_review_count, 30)
+        self.assertNotIn("가격대", parsed.missing_conditions)
+        self.assertFalse(any(condition.startswith("최대가격대=") for condition in parsed.extracted_conditions))
+        self.assertIn("최소평점=3.7", parsed.extracted_conditions)
+        self.assertIn("최소리뷰수=30", parsed.extracted_conditions)
+
+    def test_parse_explicit_price_preference_only_when_user_requests_it(self) -> None:
+        parsed = parse_user_request("전주 객사 일본식라면 추천 너무 비싸지 않게")
+
+        self.assertEqual(parsed.max_price_level, 2)
+        self.assertIn("최대가격대=2", parsed.extracted_conditions)
 
     def test_branch_name_jeonjujeom_does_not_create_bar_intent(self) -> None:
         parsed = parse_user_request("평양옥류관 전주점 근처 맛집 추천")
@@ -990,6 +1008,112 @@ class PublicReflectionTests(unittest.TestCase):
         self.assertIn("공식 메타데이터 검증: 5점", answer)
         self.assertIn("장소 링크 지표 보강: observed", answer)
         self.assertIn("장소 링크: https://place.map.kakao.com/1", answer)
+
+
+class KakaoMetricEnrichmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_enrichment_excludes_missing_rating_and_review_by_default(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="일본식라면",
+            min_rating=3.7,
+            min_review_count=30,
+            max_price_level=None,
+        )
+        candidates = [
+            {
+                "restaurant_id": "kakao:1",
+                "name": "후기없는가게",
+                "place_url": "https://place.map.kakao.com/1",
+                "score_reasons": [],
+            }
+        ]
+
+        class FakeClient:
+            async def call_tool(self, action):
+                class Result:
+                    summary = "metrics not found"
+                    data = {
+                        "status": "ok",
+                        "place_url": "https://place.map.kakao.com/1",
+                        "place_name": "후기없는가게",
+                        "metrics_status": "not_found",
+                        "rating": None,
+                        "review_count": None,
+                        "price_level": None,
+                        "condition_checks": {"rating": None, "review_count": None, "price_level": None},
+                    }
+
+                return Result()
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        enriched, reflection = await enrich_kakao_candidates_with_place_metrics(
+            candidates=candidates,
+            parsed=parsed,
+            public_client=FakeClient(),
+            trace=DummyTrace(),
+            messages=[],
+            use_llm=False,
+            enabled=True,
+        )
+
+        self.assertEqual(enriched, [])
+        self.assertIn("모든 후보", reflection)
+
+    async def test_enrichment_keeps_observed_rating_and_review_without_price_filter(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="일본식라면",
+            min_rating=3.7,
+            min_review_count=30,
+            max_price_level=None,
+        )
+        candidates = [
+            {
+                "restaurant_id": "kakao:1",
+                "name": "검증된가게",
+                "place_url": "https://place.map.kakao.com/1",
+                "score_reasons": [],
+            }
+        ]
+
+        class FakeClient:
+            async def call_tool(self, action):
+                class Result:
+                    summary = "metrics observed"
+                    data = {
+                        "status": "ok",
+                        "place_url": "https://place.map.kakao.com/1",
+                        "place_name": "검증된가게",
+                        "metrics_status": "ok",
+                        "rating": 3.8,
+                        "review_count": 30,
+                        "price_level": None,
+                        "condition_checks": {"rating": True, "review_count": True, "price_level": None},
+                    }
+
+                return Result()
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        enriched, reflection = await enrich_kakao_candidates_with_place_metrics(
+            candidates=candidates,
+            parsed=parsed,
+            public_client=FakeClient(),
+            trace=DummyTrace(),
+            messages=[],
+            use_llm=False,
+            enabled=True,
+        )
+
+        self.assertEqual(len(enriched), 1)
+        self.assertEqual(enriched[0]["rating"], 3.8)
+        self.assertEqual(enriched[0]["review_count"], 30)
+        self.assertIn("1개 후보", reflection)
 
 
 if __name__ == "__main__":
