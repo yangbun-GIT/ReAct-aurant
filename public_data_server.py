@@ -29,6 +29,7 @@ CACHE_ROOT = Path("data/cache/tourapi")
 DEFAULT_CACHE_TTL = timedelta(hours=24)
 CONTENT_TYPE_RESTAURANT = "39"
 KAKAO_LOCAL_BASE_URL = "https://dapi.kakao.com/v2/local"
+KAKAO_PLACE_API_BASE_URL = "https://place-api.map.kakao.com"
 
 CATEGORY_CUISINES = {
     "A05020100": "한식",
@@ -756,6 +757,178 @@ def _parse_price_level_from_text(text: str) -> int | None:
     return None
 
 
+def _kakao_place_id_from_url(place_url: str) -> str | None:
+    match = re.search(r"place\.map\.kakao\.com/(?:m/)?([0-9]+)", place_url or "")
+    return match.group(1) if match else None
+
+
+def _nested_get(payload: dict[str, Any], path: list[str]) -> Any:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _price_level_from_symbol(symbol: Any) -> int | None:
+    if not isinstance(symbol, str):
+        return None
+    count = symbol.count("\u20a9")
+    return min(4, max(1, count)) if count else None
+
+
+def _price_level_from_menu_items(items: Any) -> int | None:
+    if not isinstance(items, list):
+        return None
+    prices: list[int] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        price = _int_or_none(item.get("price"))
+        if price and price > 0:
+            prices.append(price)
+    if not prices:
+        return None
+    average_price = sum(prices) / len(prices)
+    if average_price <= 10000:
+        return 1
+    if average_price <= 20000:
+        return 2
+    if average_price <= 35000:
+        return 3
+    return 4
+
+
+def _menu_price_summary(items: Any) -> str | None:
+    if not isinstance(items, list):
+        return None
+    prices: list[int] = []
+    for item in items:
+        if isinstance(item, dict):
+            price = _int_or_none(item.get("price"))
+            if price and price > 0:
+                prices.append(price)
+    if not prices:
+        return None
+    return f"menu_price_range={min(prices)}-{max(prices)}, average={round(sum(prices) / len(prices))}"
+
+
+def _condition_checks(
+    *,
+    rating: float | None,
+    review_count: int | None,
+    price_level: int | None,
+    min_rating: float | None,
+    min_review_count: int | None,
+    max_price_level: int | None,
+) -> dict[str, bool | None]:
+    return {
+        "rating": None if rating is None or min_rating is None else rating >= float(min_rating),
+        "review_count": None if review_count is None or min_review_count is None else review_count >= int(min_review_count),
+        "price_level": None if price_level is None or max_price_level is None else price_level <= int(max_price_level),
+    }
+
+
+def _extract_kakao_panel_metrics(
+    *,
+    secure_url: str,
+    place_name: str | None,
+    min_rating: float | None,
+    min_review_count: int | None,
+    max_price_level: int | None,
+) -> dict[str, Any] | None:
+    place_id = _kakao_place_id_from_url(secure_url)
+    if not place_id:
+        return None
+
+    api_url = f"{KAKAO_PLACE_API_BASE_URL}/places/panel3/{place_id}"
+    response = httpx.get(
+        api_url,
+        follow_redirects=True,
+        timeout=8,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ReAct-aurant/1.0",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.5,en;q=0.3",
+            "Origin": "https://place.map.kakao.com",
+            "Referer": secure_url,
+            "pf": "PC",
+            "appVersion": "6.6.0",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        return None
+
+    score_set = _nested_get(payload, ["kakaomap_review", "score_set"]) or {}
+    rating = _float_or_none(score_set.get("average_score")) if isinstance(score_set, dict) else None
+    review_count = _int_or_none(score_set.get("review_count")) if isinstance(score_set, dict) else None
+    blog_review_count = _int_or_none(_nested_get(payload, ["blog_review", "review_count"]))
+
+    price_level = _price_level_from_symbol(_nested_get(payload, ["ai_mate", "price_level", "symbol"]))
+    menu_items = _nested_get(payload, ["menu", "menus", "items"])
+    if price_level is None:
+        price_level = _price_level_from_menu_items(menu_items)
+
+    effective_name = _nested_get(payload, ["summary", "name"]) or place_name
+    category = _nested_get(payload, ["summary", "category", "name"])
+    menu_price_summary = _menu_price_summary(menu_items)
+    evidence_parts = [
+        f"place_id={place_id}",
+        f"name={effective_name}",
+        f"category={category}",
+        f"kakaomap_average_score={rating}",
+        f"kakaomap_review_count={review_count}",
+        f"blog_review_count={blog_review_count}",
+        f"price_level={price_level}",
+    ]
+    if menu_price_summary:
+        evidence_parts.append(menu_price_summary)
+    evidence_text = "; ".join(part for part in evidence_parts if part is not None)
+    observed = any(value is not None for value in [rating, review_count, price_level])
+
+    return {
+        "status": "ok",
+        "source": "Kakao place panel API",
+        "place_name": effective_name,
+        "place_url": secure_url,
+        "place_id": place_id,
+        "http_status": response.status_code,
+        "metrics_status": "observed" if observed else "not_found",
+        "rating": rating,
+        "review_count": review_count,
+        "blog_review_count": blog_review_count,
+        "price_level": price_level,
+        "condition_checks": _condition_checks(
+            rating=rating,
+            review_count=review_count,
+            price_level=price_level,
+            min_rating=min_rating,
+            min_review_count=min_review_count,
+            max_price_level=max_price_level,
+        ),
+        "evidence_text": evidence_text[:3500],
+        "evidence_snippets": [evidence_text[:1000]],
+        "message": (
+            "Kakao place panel API returned rating/review/price indicators."
+            if observed
+            else "Kakao place panel API did not include rating/review/price indicators."
+        ),
+        "fallback_policy": "Use static Kakao page parsing only when the panel API cannot provide observable metrics.",
+    }
+
+
 def _text_blob(restaurant: dict[str, Any]) -> str:
     return " ".join(
         str(value)
@@ -1402,6 +1575,19 @@ def extract_kakao_place_metrics(
 
     secure_url = re.sub(r"^http://", "https://", url)
     try:
+        panel_metrics = _extract_kakao_panel_metrics(
+            secure_url=secure_url,
+            place_name=place_name,
+            min_rating=min_rating,
+            min_review_count=min_review_count,
+            max_price_level=max_price_level,
+        )
+        if panel_metrics and panel_metrics.get("metrics_status") == "observed":
+            return panel_metrics
+    except Exception:
+        panel_metrics = None
+
+    try:
         response = httpx.get(
             secure_url,
             follow_redirects=True,
@@ -1430,11 +1616,14 @@ def extract_kakao_place_metrics(
     price_level = _parse_price_level_from_text(evidence_text)
     observed = any(value is not None for value in [rating, review_count, price_level])
 
-    deterministic_meets: dict[str, bool | None] = {
-        "rating": None if rating is None or min_rating is None else rating >= float(min_rating),
-        "review_count": None if review_count is None or min_review_count is None else review_count >= int(min_review_count),
-        "price_level": None if price_level is None or max_price_level is None else price_level <= int(max_price_level),
-    }
+    deterministic_meets = _condition_checks(
+        rating=rating,
+        review_count=review_count,
+        price_level=price_level,
+        min_rating=min_rating,
+        min_review_count=min_review_count,
+        max_price_level=max_price_level,
+    )
 
     return {
         "status": "ok",

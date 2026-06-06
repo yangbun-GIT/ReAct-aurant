@@ -616,6 +616,51 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["condition_checks"]["review_count"], True)
         self.assertEqual(result["condition_checks"]["price_level"], True)
 
+    def test_extract_kakao_place_metrics_uses_panel_api_for_rating_review_price(self) -> None:
+        class FakePanelResponse:
+            status_code = 200
+            text = "{}"
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, object]:
+                return {
+                    "summary": {
+                        "name": "Panel Ramen",
+                        "category": {"name": "Japanese ramen"},
+                    },
+                    "kakaomap_review": {
+                        "score_set": {
+                            "average_score": 3.1,
+                            "review_count": 30,
+                        }
+                    },
+                    "blog_review": {"review_count": 57},
+                    "ai_mate": {"price_level": {"symbol": "\u20a9\u20a9"}},
+                    "menu": {"menus": {"items": [{"price": 7500}, {"price": 8000}]}},
+                }
+
+        with patch("public_data_server.httpx.get", return_value=FakePanelResponse()) as mocked_get:
+            result = extract_kakao_place_metrics(
+                place_url="https://place.map.kakao.com/27375643",
+                place_name="Panel Ramen",
+                min_rating=4.2,
+                min_review_count=100,
+                max_price_level=2,
+            )
+
+        self.assertEqual(mocked_get.call_count, 1)
+        self.assertEqual(result["source"], "Kakao place panel API")
+        self.assertEqual(result["metrics_status"], "observed")
+        self.assertEqual(result["rating"], 3.1)
+        self.assertEqual(result["review_count"], 30)
+        self.assertEqual(result["blog_review_count"], 57)
+        self.assertEqual(result["price_level"], 2)
+        self.assertEqual(result["condition_checks"]["rating"], False)
+        self.assertEqual(result["condition_checks"]["review_count"], False)
+        self.assertEqual(result["condition_checks"]["price_level"], True)
+
     def test_public_rank_scores_jeonju_food_candidates(self) -> None:
         candidate = _standardize_restaurant(
             {
@@ -873,12 +918,12 @@ class PublicReflectionTests(unittest.TestCase):
 
         applied_line = next(line for line in answer.splitlines() if line.startswith("적용 조건:"))
         preference_line = next(line for line in answer.splitlines() if line.startswith("사용자 선호 반영:"))
-        self.assertNotIn("최소평점", applied_line)
-        self.assertNotIn("최소리뷰수", applied_line)
-        self.assertNotIn("최대가격대", applied_line)
-        self.assertNotIn("리뷰가 좋은 곳", preference_line)
-        self.assertIn("미적용 조건:", answer)
-        self.assertIn("공식 응답이 평점/리뷰 수/가격대 필드를 제공하지 않아 해당 수치 자체는 직접 필터링하지 않았고", answer)
+        self.assertIn("최소평점", applied_line)
+        self.assertIn("최소리뷰수", applied_line)
+        self.assertIn("최대가격대", applied_line)
+        self.assertIn("리뷰가 좋은 곳", preference_line)
+        self.assertNotIn("미적용 조건:", answer)
+        self.assertIn("카카오 장소 패널 API에서 관측된 평점/후기 수/가격대는 조건 필터링에 적용했습니다", answer)
         self.assertIn("공식 메타데이터 검증: 5점", answer)
         self.assertIn("장소 링크 지표 보강: observed", answer)
         self.assertIn("장소 링크: https://place.map.kakao.com/1", answer)

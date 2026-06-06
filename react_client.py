@@ -1022,9 +1022,18 @@ def reflect_public_recommendations(
             )
 
     if uses_kakao:
+        has_observed_place_metrics = any(
+            (candidate.get("place_metric_judgment") or {}).get("status") == "observed"
+            for candidate in ranked_candidates
+        )
+        metric_sentence = (
+            "Kakao Local 검색 API 자체에는 평점, 리뷰 수, 가격대가 없지만 카카오 장소 패널 API에서 관측된 지표는 조건 확인에 적용했습니다."
+            if has_observed_place_metrics
+            else "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
+        )
         reflection = (
             "Kakao Local API 검토 완료: 장소명, 주소, 좌표, 카테고리, 거리, 요청 조건 일치도를 확인했습니다. "
-            "Kakao Local API는 평점, 리뷰 수, 가격대를 제공하지 않아 해당 항목은 추천 기준에서 제외했습니다."
+            + metric_sentence
         )
     else:
         reflection = (
@@ -1087,13 +1096,17 @@ def _split_supported_public_conditions(
     source_label: str,
     *,
     kakao_metric_proxy: bool = False,
+    kakao_metric_observed: bool = False,
 ) -> tuple[list[str], list[str]]:
     unsupported_prefixes = ("최대가격대=", "최소평점=", "최소리뷰수=")
     supported: list[str] = []
     unsupported: list[str] = []
     for condition in parsed.extracted_conditions:
         if condition.startswith(unsupported_prefixes):
-            unsupported.append(condition)
+            if kakao_metric_observed:
+                supported.append(condition)
+            else:
+                unsupported.append(condition)
         else:
             supported.append(condition)
     if unsupported:
@@ -1120,18 +1133,28 @@ def build_public_final_answer(
     source_names = {str(item.get("source")) for item in recommendations if item.get("source")}
     if data_source_label == "Kakao Local API" or "Kakao Local API" in source_names:
         source_label = "Kakao Local API"
-        limitation = "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않습니다. 대신 장소명, 세부 카테고리, 주소, 거리, 전화번호, 장소 링크를 검증 가능한 추천 근거로 사용하고 장소 링크는 추가 후기 확인용으로 제공합니다."
         missing_metric_label = "Kakao Local 미제공"
         kakao_metric_proxy = any(item.get("metadata_quality_score") for item in recommendations)
+        kakao_metric_observed = any(
+            (item.get("place_metric_judgment") or {}).get("status") == "observed"
+            for item in recommendations
+        ) or "장소 링크 지표 보강" in reflection
+        if kakao_metric_observed:
+            limitation = "Kakao Local 검색 API 자체는 평점, 리뷰 수, 가격대를 제공하지 않지만, 카카오 장소 패널 API에서 관측된 평점/후기 수/가격대는 조건 필터링에 적용했습니다. 관측되지 않은 값은 임의로 생성하지 않습니다."
+            missing_metric_label = "Kakao 장소 패널 미제공"
+        else:
+            limitation = "Kakao Local API 공식 응답은 평점, 리뷰 수, 가격대를 제공하지 않습니다. 대신 장소명, 세부 카테고리, 주소, 거리, 전화번호, 장소 링크를 검증 가능한 추천 근거로 사용하고 장소 링크는 추가 후기 확인용으로 제공합니다."
     else:
         source_label = "한국관광공사 TourAPI KorService2"
         limitation = "TourAPI는 평점, 리뷰 수, 가격대를 제공하지 않아 임의 수치를 생성하지 않았습니다."
         missing_metric_label = "TourAPI 미제공"
         kakao_metric_proxy = False
+        kakao_metric_observed = False
     supported_conditions, unsupported_conditions = _split_supported_public_conditions(
         parsed,
         source_label,
         kakao_metric_proxy=kakao_metric_proxy,
+        kakao_metric_observed=kakao_metric_observed,
     )
     profile_notes = list(profile.get("notes", []))
     if unsupported_conditions:
@@ -1453,8 +1476,12 @@ def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest
     failed: list[str] = []
     if checks.get("rating") is False:
         failed.append(f"평점 {rating} < 최소 {parsed.min_rating}")
+    elif rating is None and parsed.min_rating >= 4.2:
+        failed.append(f"평점 미관측 < 최소 {parsed.min_rating} 조건 검증 불가")
     if checks.get("review_count") is False:
         failed.append(f"리뷰 수 {review_count} < 최소 {parsed.min_review_count}")
+    elif review_count is None and parsed.min_review_count >= 100:
+        failed.append(f"리뷰 수 미관측 < 최소 {parsed.min_review_count} 조건 검증 불가")
     if checks.get("price_level") is False:
         failed.append(f"가격대 {price_level} > 최대 {parsed.max_price_level}")
     observed = any(value is not None for value in [rating, review_count, price_level])
@@ -1943,6 +1970,8 @@ async def run_agent(
                         deterministic_reflection = "Kakao Local API 우선 모드로 장소 후보를 조회했습니다. " + deterministic_reflection
                         if metric_reflection:
                             deterministic_reflection += " " + metric_reflection
+                    elif metric_reflection:
+                        deterministic_reflection += " " + metric_reflection
                 else:
                     kakao_issue = {
                         "type": "kakao_local_unavailable",
@@ -2154,6 +2183,8 @@ async def run_agent(
                                 )
                                 if metric_reflection:
                                     deterministic_reflection += " " + metric_reflection
+                            elif metric_reflection:
+                                deterministic_reflection += " " + metric_reflection
                         else:
                             kakao_issue = {
                                 "type": "kakao_local_unavailable",
