@@ -355,13 +355,14 @@ def clear_run_records() -> int:
     return removed
 
 
-def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str, kakao_place_enrichment: bool = False) -> dict[str, Any]:
+def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str, kakao_place_enrichment: bool = True) -> dict[str, Any]:
     if data_source not in VALID_DATA_SOURCES:
         raise ValueError("지원하지 않는 데이터 소스입니다.")
     if llm_mode not in VALID_LLM_MODES:
         raise ValueError("지원하지 않는 LLM 모드입니다.")
     if not query.strip():
         raise ValueError("질문을 입력해야 합니다.")
+    effective_kakao_place_enrichment = bool(kakao_place_enrichment and data_source in {"auto", "public", "kakao"})
 
     created_at = datetime.now().isoformat(timespec="seconds")
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
@@ -381,7 +382,7 @@ def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str, kakao_p
         command.append("--use-llm")
     elif llm_mode == "no":
         command.append("--no-llm")
-    if kakao_place_enrichment:
+    if effective_kakao_place_enrichment:
         command.append("--enrich-kakao-place-metrics")
 
     env = os.environ.copy()
@@ -426,7 +427,7 @@ def run_agent_for_dashboard(query: str, data_source: str, llm_mode: str, kakao_p
         "query": query.strip(),
         "data_source": data_source,
         "llm_mode": llm_mode,
-        "kakao_place_enrichment": kakao_place_enrichment,
+        "kakao_place_enrichment": effective_kakao_place_enrichment,
         "returncode": returncode,
         "timed_out": timed_out,
         "command": display_command,
@@ -568,6 +569,22 @@ def render_dashboard() -> str:
     textarea {{
       min-height: 128px;
       resize: vertical;
+    }}
+    textarea::placeholder {{
+      color: #8a8178;
+      opacity: .72;
+    }}
+    .scope-badge {{
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 26px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #eef7ef;
+      color: var(--herb-dark);
+      font-size: 12px;
+      font-weight: 800;
     }}
     .field {{
       margin-bottom: 14px;
@@ -1065,6 +1082,7 @@ def render_dashboard() -> str:
     <div class="topbar">
       <div class="brand">
         <h1>ReAct-aurant Admin</h1>
+        <span class="scope-badge">전주시 기반 맛집 추천 Agent</span>
         <span class="subtle">관리자: {admin_name} · 로컬 자동 로그인: {auto_login} · 저장 위치: logs/web_runs</span>
       </div>
       <button class="secondary" id="refreshBtn" type="button">새로고침</button>
@@ -1073,19 +1091,20 @@ def render_dashboard() -> str:
   <main>
     <aside>
       <div class="panel-header">
-        <h2>입력 실행</h2>
+        <h2>전주시 맛집 입력</h2>
       </div>
       <div class="panel-body">
         <form id="runForm">
           <div class="field">
             <label for="query">질문</label>
-            <textarea id="query" name="query">{safe_default_query}</textarea>
+            <textarea id="query" name="query" required placeholder="{safe_default_query}"></textarea>
           </div>
           <div class="controls">
             <div class="field">
               <label for="dataSource">데이터 소스</label>
               <select id="dataSource" name="dataSource">
                 <option value="auto">auto</option>
+                <option value="kakao">kakao</option>
                 <option value="public">public</option>
                 <option value="local">local</option>
               </select>
@@ -1101,19 +1120,19 @@ def render_dashboard() -> str:
           </div>
           <div class="toggle-field">
             <label class="toggle-label" for="kakaoEnabled">
-              <input id="kakaoEnabled" name="kakaoEnabled" type="checkbox">
+              <input id="kakaoEnabled" name="kakaoEnabled" type="checkbox" checked>
               <span>
                 Kakao Local API 우선 사용
-                <span class="toggle-help">활성화하면 음식점 후보와 위치 검색을 Kakao Local API 기준으로 실행합니다.</span>
+                <span class="toggle-help">전주시 음식점 후보와 위치 검색을 Kakao Local API 기준으로 실행합니다.</span>
               </span>
             </label>
           </div>
           <div class="toggle-field">
             <label class="toggle-label" for="kakaoPlaceEnrichment">
-              <input id="kakaoPlaceEnrichment" name="kakaoPlaceEnrichment" type="checkbox">
+              <input id="kakaoPlaceEnrichment" name="kakaoPlaceEnrichment" type="checkbox" checked>
               <span>
                 Kakao 장소 링크 지표 보강
-                <span class="toggle-help">장소 링크 페이지에서 평점·리뷰 수·가격대 추출을 시도하고, 실패하면 기존 추천 기준으로 fallback합니다.</span>
+                <span class="toggle-help">장소 패널과 페이지에서 평점·후기 수·가격대 추출을 시도하고, 관측되지 않은 값은 생성하지 않습니다.</span>
               </span>
             </label>
           </div>
@@ -1455,7 +1474,7 @@ def render_dashboard() -> str:
       setStatus('Agent 실행 중입니다. MCP 서버 연결과 도구 호출이 끝날 때까지 기다리세요.');
       try {{
         const payload = {{
-          query: document.getElementById('query').value,
+          query: document.getElementById('query').value.trim(),
           data_source: document.getElementById('kakaoEnabled').checked ? 'kakao' : document.getElementById('dataSource').value,
           llm_mode: document.getElementById('llmMode').value,
           kakao_place_enrichment: document.getElementById('kakaoPlaceEnrichment').checked
@@ -1720,7 +1739,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     query=str(payload.get("query", "")),
                     data_source=str(payload.get("data_source", "auto")),
                     llm_mode=str(payload.get("llm_mode", "auto")),
-                    kakao_place_enrichment=bool(payload.get("kakao_place_enrichment", False)),
+                    kakao_place_enrichment=bool(payload.get("kakao_place_enrichment", True)),
                 )
             except Exception as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

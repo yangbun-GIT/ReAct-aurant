@@ -11,7 +11,8 @@ class WebDashboardTests(unittest.TestCase):
     def test_dashboard_html_contains_required_review_surfaces(self) -> None:
         html = web_dashboard.render_dashboard()
 
-        self.assertIn("입력 실행", html)
+        self.assertIn("전주시 맛집 입력", html)
+        self.assertIn("전주시 기반 맛집 추천 Agent", html)
         self.assertIn("최종 추천", html)
         self.assertIn("Trace 자연어", html)
         self.assertIn("Trace 코드 흐름", html)
@@ -20,8 +21,13 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("LLM 모드", html)
         self.assertIn("Kakao Local API 우선 사용", html)
         self.assertIn("kakaoEnabled", html)
+        self.assertIn('id="kakaoEnabled" name="kakaoEnabled" type="checkbox" checked', html)
         self.assertIn("Kakao 장소 링크 지표 보강", html)
         self.assertIn("kakaoPlaceEnrichment", html)
+        self.assertIn('id="kakaoPlaceEnrichment" name="kakaoPlaceEnrichment" type="checkbox" checked', html)
+        self.assertIn('placeholder="전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘.', html)
+        self.assertIn('textarea::placeholder', html)
+        self.assertNotIn('name="query">전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘.', html)
         self.assertIn("stderr 출력 없음", html)
         self.assertIn("answer-pre", html)
         self.assertIn("answer-view", html)
@@ -32,6 +38,33 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("log-pre", html)
         self.assertIn("--accent: #c2410c", html)
         self.assertIn("--herb: #2f7d4e", html)
+
+    def test_dashboard_api_defaults_to_kakao_place_metric_enrichment(self) -> None:
+        original_root = web_dashboard.RUNS_ROOT
+
+        def fake_run(command, **kwargs):
+            trace_path = Path(command[command.index("--trace") + 1])
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            trace_path.write_text(
+                '{"step":1,"agent_name":"Coordinator Agent","pattern":"Final Answer","final_answer":"최종 추천 결과"}\n',
+                encoding="utf-8",
+            )
+            return SimpleNamespace(stdout="최종 추천 결과", stderr="", returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                web_dashboard.RUNS_ROOT = Path(temp_dir)
+                with patch("web_dashboard.subprocess.run", side_effect=fake_run):
+                    record = web_dashboard.run_agent_for_dashboard(
+                        query="전주 객사 맛집 추천",
+                        data_source="kakao",
+                        llm_mode="no",
+                    )
+
+                self.assertIn("--enrich-kakao-place-metrics", record["command"])
+                self.assertTrue(record["kakao_place_enrichment"])
+            finally:
+                web_dashboard.RUNS_ROOT = original_root
 
     def test_trace_views_expose_natural_language_and_code_flow(self) -> None:
         events = web_dashboard.load_trace_events(Path("sample_outputs/jeonju_trace_sample.jsonl"))
