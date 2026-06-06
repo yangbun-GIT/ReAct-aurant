@@ -17,6 +17,7 @@ from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, Field
 
 from jeonju_gazetteer import jeonju_alias_terms, jeonju_detail_area_aliases
+from public_data_server import CUISINE_KEYWORDS as PUBLIC_CUISINE_KEYWORDS
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -1056,8 +1057,22 @@ def reflect_public_recommendations(
     return accepted[: parsed.limit], reflection
 
 
-def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -> bool:
+def _expanded_public_cuisine_terms(cuisine: str) -> list[str]:
     terms = [cuisine]
+    for category, keywords in PUBLIC_CUISINE_KEYWORDS.items():
+        if cuisine == category or cuisine in keywords or any(keyword in cuisine for keyword in keywords):
+            terms.extend([category, *keywords])
+    blocked_match_terms = {"전주", "맛집", "음식점", "식당", "추천", "근처", "주변"}
+    unique: list[str] = []
+    for term in terms:
+        cleaned = re.sub(r"\s+", " ", str(term)).strip()
+        if cleaned and cleaned not in blocked_match_terms and cleaned not in unique:
+            unique.append(cleaned)
+    return unique
+
+
+def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -> bool:
+    terms = _expanded_public_cuisine_terms(cuisine)
     if cuisine == "술집":
         terms.extend([*BAR_CANDIDATE_MATCH_TERMS, *TRADITIONAL_DRINKING_TERMS])
     elif cuisine == "바":
@@ -1080,6 +1095,8 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
             candidate.get("cuisine"),
             candidate.get("address"),
             candidate.get("overview"),
+            candidate.get("search_keyword"),
+            " ".join(str(value) for value in (candidate.get("category_codes") or {}).values() if value),
             " ".join(candidate.get("signature_menu") or []),
         ]
         if value

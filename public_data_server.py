@@ -106,6 +106,7 @@ FOOD_QUERY_STOPWORDS = {
     "음식점",
     "식당",
     "추천",
+    "전주",
     "근처",
     "주변",
     "에서",
@@ -1032,6 +1033,13 @@ def _area_qualified_kakao_queries(search_area: dict[str, Any], terms: list[str],
     return _unique_strings(qualified_terms)[:max_queries]
 
 
+def _expanded_kakao_terms(requested: str) -> list[str]:
+    terms = _food_query_terms(requested)
+    if terms:
+        return terms
+    return [requested]
+
+
 def _kakao_keyword_queries(requested: str, search_area: dict[str, Any]) -> list[str]:
     if requested == "술집":
         return _area_qualified_kakao_queries(search_area, KAKAO_BAR_KEYWORDS)
@@ -1048,7 +1056,7 @@ def _kakao_keyword_queries(requested: str, search_area: dict[str, Any]) -> list[
         if requested in {"고기", "고깃집", "육류"}:
             terms = _unique_strings(["고기집", *terms])
         return _area_qualified_kakao_queries(search_area, terms)
-    return _area_qualified_kakao_queries(search_area, [requested], max_queries=3)
+    return _area_qualified_kakao_queries(search_area, _expanded_kakao_terms(requested))
 
 
 def _is_jeonju_restaurant(restaurant: dict[str, Any]) -> bool:

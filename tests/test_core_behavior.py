@@ -7,6 +7,8 @@ from env_context_server import _resolve_location as _resolve_weather_location
 from gourmet_db_server import rank_restaurants, search_restaurants
 from jeonju_gazetteer import JEONJU_SEARCH_AREAS
 from public_data_server import (
+    CUISINE_KEYWORDS,
+    _kakao_keyword_queries,
     _matches_food_query,
     _is_jeonju_restaurant,
     _resolve_search_area,
@@ -26,6 +28,7 @@ from react_client import (
     evaluate_input_guard,
     parse_llm_json,
     parse_user_request,
+    _public_candidate_matches_cuisine,
     run_llm_kakao_metric_judgment,
     reflect_public_recommendations,
     resolve_llm_enabled,
@@ -616,11 +619,90 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["candidates"][0]["name"], "해율담")
         self.assertEqual(result["candidates"][0]["cuisine"], "육류,고기")
 
+    def test_kakao_registered_food_keywords_use_area_qualified_expansion(self) -> None:
+        captured_queries: list[str] = []
+
+        def fake_kakao_request(path: str, params: dict[str, object]) -> dict[str, object]:
+            captured_queries.append(str(params["query"]))
+            if params["query"] != "전주 객사 파스타":
+                return {"status": "ok", "payload": {"documents": []}}
+            return {
+                "status": "ok",
+                "payload": {
+                    "documents": [
+                        {
+                            "id": "pasta-1",
+                            "place_name": "객사파스타",
+                            "category_name": "음식점 > 양식 > 이탈리안",
+                            "category_group_code": "FD6",
+                            "category_group_name": "음식점",
+                            "road_address_name": "전북특별자치도 전주시 완산구 전주객사길 12",
+                            "x": "127.1465",
+                            "y": "35.8186",
+                            "distance": "120",
+                            "place_url": "http://place.map.kakao.com/pasta-1",
+                        }
+                    ]
+                },
+            }
+
+        with patch("public_data_server._kakao_request", side_effect=fake_kakao_request):
+            result = search_kakao_local_places(
+                area="전주 객사",
+                cuisine="파스타",
+                max_distance_m=1000,
+            )
+
+        self.assertIn("전주 객사 파스타", captured_queries)
+        self.assertIn("객사 파스타", captured_queries)
+        self.assertIn("이탈리안", captured_queries)
+        self.assertIn("양식", captured_queries)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidates"][0]["name"], "객사파스타")
+
+    def test_all_registered_food_categories_build_area_qualified_kakao_queries(self) -> None:
+        search_area = {"name": "객사"}
+
+        for category, keywords in CUISINE_KEYWORDS.items():
+            requested = category if category != "한식" else "한식"
+            with self.subTest(category=category):
+                queries = _kakao_keyword_queries(requested, search_area)
+
+                self.assertTrue(queries)
+                self.assertTrue(any(query.startswith(f"전주 객사 ") for query in queries))
+                self.assertIn(requested, " ".join(queries + keywords))
+
     def test_parse_user_request_preserves_meat_house_intent(self) -> None:
         parsed = parse_user_request("전주 객사 고기집 추천해봐")
 
         self.assertEqual(parsed.location, "전주 객사")
         self.assertEqual(parsed.cuisine, "고기집")
+
+    def test_public_candidate_match_uses_registered_food_expansion(self) -> None:
+        candidate = {
+            "name": "객사파스타",
+            "cuisine": "이탈리안",
+            "address": "전북특별자치도 전주시 완산구 전주객사길 12",
+            "overview": "Kakao Local category: 음식점 > 양식 > 이탈리안",
+            "search_keyword": "전주 객사 파스타",
+            "category_codes": {"cat3": "음식점 > 양식 > 이탈리안"},
+            "signature_menu": [],
+        }
+
+        self.assertTrue(_public_candidate_matches_cuisine(candidate, "파스타"))
+
+    def test_public_candidate_match_does_not_treat_jeonju_address_as_hansik(self) -> None:
+        candidate = {
+            "name": "객사커피",
+            "cuisine": "카페",
+            "address": "전북특별자치도 전주시 완산구 전주객사길 12",
+            "overview": "Kakao Local category: 음식점 > 카페 > 커피전문점",
+            "search_keyword": "카페",
+            "category_codes": {"cat3": "음식점 > 카페 > 커피전문점"},
+            "signature_menu": [],
+        }
+
+        self.assertFalse(_public_candidate_matches_cuisine(candidate, "한식"))
 
     def test_kakao_search_records_metric_proxy_without_fake_rating_review_price(self) -> None:
         kakao_payload = {
