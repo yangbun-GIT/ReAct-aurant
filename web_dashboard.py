@@ -876,6 +876,61 @@ def render_dashboard() -> str:
       word-break: keep-all;
       overflow-wrap: anywhere;
     }}
+    .no-result-panel {{
+      display: grid;
+      gap: 14px;
+    }}
+    .no-result-hero {{
+      border-radius: 8px;
+      padding: 16px;
+      background: #fff7ed;
+      box-shadow: inset 5px 0 var(--accent), var(--shadow-soft);
+    }}
+    .no-result-hero h3 {{
+      margin: 0 0 6px;
+      font-size: 18px;
+      line-height: 1.3;
+      color: var(--accent-dark);
+    }}
+    .no-result-hero p {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      word-break: keep-all;
+    }}
+    .no-result-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .no-result-card {{
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+      box-shadow: var(--shadow-soft);
+    }}
+    .no-result-card h4 {{
+      margin: 0 0 10px;
+      font-size: 15px;
+      color: var(--text);
+    }}
+    .no-result-list {{
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .no-result-list li {{
+      padding: 9px 10px;
+      border-radius: 6px;
+      background: #fbfaf8;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }}
     .restaurant-cards {{
       display: grid;
       gap: 12px;
@@ -1058,6 +1113,9 @@ def render_dashboard() -> str:
       }}
       .summary-grid {{
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .no-result-grid {{
+        grid-template-columns: 1fr;
       }}
     }}
     @media (max-width: 560px) {{
@@ -1255,6 +1313,89 @@ def render_dashboard() -> str:
       return {{ intro, cards, reflection: reflection.join(' ') }};
     }}
 
+    function parseNoResultAnswer(answer) {{
+      const lines = String(answer || '').split(/\\r?\\n/);
+      const summary = [];
+      const feedback = [];
+      const suggestions = [];
+      const reflection = [];
+      let failure = '';
+      let mode = 'summary';
+      for (const rawLine of lines) {{
+        const line = rawLine.trim();
+        if (!line || line === '최종 추천 결과') continue;
+        if (line === '예외 처리 피드백:') {{
+          mode = 'feedback';
+          continue;
+        }}
+        if (line === '다음 검색 제안') {{
+          mode = 'suggestions';
+          continue;
+        }}
+        if (line.startsWith('Reflection:')) {{
+          mode = 'reflection';
+          reflection.push(line.replace(/^Reflection:\\s*/, ''));
+          continue;
+        }}
+        if (line.includes('조건을 충족하는 추천 후보를 확보하지 못했습니다')) {{
+          failure = line;
+          mode = 'afterFailure';
+          continue;
+        }}
+        const cleaned = line.replace(/^[-*]\\s*/, '');
+        if (mode === 'feedback') {{
+          feedback.push(cleaned);
+        }} else if (mode === 'suggestions') {{
+          suggestions.push(cleaned);
+        }} else if (mode === 'reflection') {{
+          reflection.push(cleaned);
+        }} else if (mode === 'summary') {{
+          summary.push(cleaned);
+        }} else if (mode === 'afterFailure') {{
+          suggestions.push(cleaned);
+        }}
+      }}
+      return {{ summary, feedback, suggestions, reflection: reflection.join(' '), failure }};
+    }}
+
+    function renderSummaryRows(lines) {{
+      return lines.map(line => {{
+        const [key, value] = splitLabel(line);
+        return `<div class="answer-line"><span class="answer-label">${{escapeHtml(key || '정보')}}</span><span class="answer-value">${{renderRichValue(value)}}</span></div>`;
+      }}).join('');
+    }}
+
+    function renderNoResultAnswer(answer) {{
+      const parsed = parseNoResultAnswer(answer);
+      const summaryHtml = parsed.summary.length
+        ? `<div class="answer-summary">${{renderSummaryRows(parsed.summary)}}</div>`
+        : '';
+      const feedbackHtml = parsed.feedback.length
+        ? `<section class="no-result-card"><h4>처리한 문제</h4><ul class="no-result-list">${{parsed.feedback.map(item => `<li>${{escapeHtml(item)}}</li>`).join('')}}</ul></section>`
+        : '';
+      const suggestionsHtml = parsed.suggestions.length
+        ? `<section class="no-result-card"><h4>다음 검색 제안</h4><ul class="no-result-list">${{parsed.suggestions.map(item => `<li>${{escapeHtml(item)}}</li>`).join('')}}</ul></section>`
+        : '';
+      const reflectionHtml = parsed.reflection
+        ? `<div class="reflection-box"><strong>Reflection</strong><br>${{escapeHtml(parsed.reflection)}}</div>`
+        : '';
+      return `
+        <div class="no-result-panel">
+          ${{summaryHtml}}
+          <section class="no-result-hero">
+            <h3>조건을 만족하는 검증 후보를 찾지 못했습니다</h3>
+            <p>${{escapeHtml(parsed.failure || '현재 입력 조건과 데이터 범위에서 추천 후보가 부족합니다. 지역이나 음식 종류를 조금 더 구체화하면 재검색이 쉬워집니다.')}}</p>
+          </section>
+          <div class="no-result-grid">${{feedbackHtml}}${{suggestionsHtml}}</div>
+          ${{reflectionHtml}}
+          <details class="raw-answer">
+            <summary>원문 답변 보기</summary>
+            <pre class="answer-pre">${{escapeHtml(answer)}}</pre>
+          </details>
+        </div>
+      `;
+    }}
+
     function renderDetail(detail) {{
       const [key, value] = splitLabel(detail);
       if (key.includes('점수 근거')) {{
@@ -1286,17 +1427,12 @@ def render_dashboard() -> str:
 
       const parsed = parseFinalAnswer(text);
       if (parsed.cards.length === 0) {{
-        target.innerHTML = `<pre class="answer-pre">${{escapeHtml(text)}}</pre>`;
+        target.innerHTML = renderNoResultAnswer(text);
         return;
       }}
 
       const summaryHtml = parsed.intro.length
-        ? `<div class="answer-summary">
-            ${{parsed.intro.map(line => {{
-              const [key, value] = splitLabel(line);
-              return `<div class="answer-line"><span class="answer-label">${{escapeHtml(key || '정보')}}</span><span class="answer-value">${{renderRichValue(value)}}</span></div>`;
-            }}).join('')}}
-          </div>`
+        ? `<div class="answer-summary">${{renderSummaryRows(parsed.intro)}}</div>`
         : '';
 
       const cardHtml = parsed.cards.map(card => `

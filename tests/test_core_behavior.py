@@ -17,6 +17,7 @@ from public_data_server import (
     _standardize_kakao_place,
     _standardize_restaurant,
     extract_kakao_place_metrics,
+    rank_tourapi_restaurants,
     search_kakao_local_places,
     search_tourapi_restaurants,
 )
@@ -217,6 +218,12 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(parsed.location, "전주 혁신동")
         self.assertIsNone(parsed.cuisine)
         self.assertIn("점심", parsed.purpose)
+
+    def test_parse_directional_place_before_matjip_not_as_cuisine(self) -> None:
+        parsed = parse_user_request("시외버스 정류장 쪽 맛집 추천해봐")
+
+        self.assertIsNone(parsed.cuisine)
+        self.assertNotIn("음식종류=쪽", parsed.extracted_conditions)
 
     def test_parse_area_alias_does_not_become_cuisine_with_requested_weather(self) -> None:
         parsed = parse_user_request("웨리단길 맛집 추천 비오는 날씨")
@@ -1224,6 +1231,37 @@ class LocalRestaurantToolTests(unittest.TestCase):
 
 
 class PublicReflectionTests(unittest.TestCase):
+    def test_ranked_kakao_recommendation_reason_explains_match_signals(self) -> None:
+        result = rank_tourapi_restaurants(
+            [
+                {
+                    "restaurant_id": "kakao:bar",
+                    "name": "테스트바",
+                    "source": "Kakao Local API",
+                    "address": "전북특별자치도 전주시 완산구 전주객사1길 1",
+                    "cuisine": "바",
+                    "category_codes": {"cat1": "KAKAO_LOCAL", "cat3": "음식점 > 술집 > 칵테일바"},
+                    "metadata_quality_score": 6,
+                    "metadata_quality_checks": ["카카오 장소 링크 제공"],
+                    "distance_m": 230,
+                    "distance_reference": "객사",
+                    "rating": 4.5,
+                    "review_count": 40,
+                    "price_level": 2,
+                    "operation": {"open_time": "18:00 ~ 02:00"},
+                }
+            ],
+            {"cuisine": "바", "purpose": "술자리", "target_location": "전주 객사", "min_rating": 4.0, "min_review_count": 20},
+        )
+
+        reason = result["ranked_candidates"][0]["recommendation_reason"]
+
+        self.assertIn("바", reason)
+        self.assertIn("230m", reason)
+        self.assertIn("평점 4.5", reason)
+        self.assertIn("리뷰 40개", reason)
+        self.assertIn("영업 시간", reason)
+
     def test_kakao_ranking_penalizes_closed_not_before_open(self) -> None:
         base = {
             "restaurant_id": "kakao:bar",

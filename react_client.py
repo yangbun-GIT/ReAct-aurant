@@ -475,6 +475,20 @@ def _non_cuisine_terms() -> set[str]:
         "음식점",
         "식당",
         "날씨",
+        "쪽",
+        "부근",
+        "정류장",
+        "버스",
+        "터미널",
+        "역",
+        "학교",
+        "대학교",
+        "병원",
+        "시청",
+        "도청",
+        "구청",
+        "공원",
+        "시장",
     } | NON_CUISINE_TERMS | set(_all_jeonju_alias_terms())
 
 
@@ -488,8 +502,9 @@ def detect_cuisine(query: str) -> str | None:
             return term
     match = re.search(r"([가-힣A-Za-z]+)\s*(?:맛집|음식점|식당|전문점)", query)
     if match:
-        candidate = match.group(1).strip()
-        if candidate and candidate not in _non_cuisine_terms():
+        candidate = re.sub(r"(근처|주변|쪽|부근)$", "", match.group(1).strip()).strip()
+        non_cuisine_terms = _non_cuisine_terms()
+        if candidate and candidate not in non_cuisine_terms and not any(term in candidate for term in non_cuisine_terms):
             return candidate
     return None
 

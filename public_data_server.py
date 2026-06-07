@@ -1391,6 +1391,66 @@ def _score_public_restaurant(
     return round(score, 2), reasons
 
 
+def _build_public_recommendation_reason(
+    restaurant: dict[str, Any],
+    reasons: list[str],
+    ranking_policy: dict[str, Any],
+) -> str:
+    source = restaurant.get("source")
+    cuisine = restaurant.get("cuisine") or "음식점"
+    requested_cuisine = ranking_policy.get("cuisine")
+    distance_m = restaurant.get("distance_m")
+    distance_reference = restaurant.get("distance_reference") or ranking_policy.get("target_location") or "요청 위치"
+    category = restaurant.get("category_codes", {}).get("cat3") or restaurant.get("overview") or cuisine
+    parts: list[str] = []
+
+    if requested_cuisine:
+        if _matches_food_query(restaurant, str(requested_cuisine)):
+            parts.append(f"요청한 '{requested_cuisine}' 의도와 장소 분류({category})가 맞습니다")
+        else:
+            parts.append(f"요청한 '{requested_cuisine}' 의도와는 일부 차이가 있어 보조 후보로만 평가했습니다")
+    else:
+        parts.append(f"전주시 {cuisine} 후보로 분류와 위치 정보를 확인했습니다")
+
+    if isinstance(distance_m, int):
+        if distance_m <= 500:
+            parts.append(f"{distance_reference} 기준 {distance_m}m로 매우 가까워 이동 부담이 낮습니다")
+        elif distance_m <= 1000:
+            parts.append(f"{distance_reference} 기준 {distance_m}m로 걸어서 검토할 수 있는 거리입니다")
+        else:
+            parts.append(f"{distance_reference} 기준 {distance_m}m라 위치 조건을 보조로 반영했습니다")
+
+    rating = _float_or_none(restaurant.get("rating"))
+    review_count = restaurant.get("review_count")
+    if rating is not None and review_count is not None:
+        parts.append(f"카카오 장소 지표에서 평점 {rating}, 리뷰 {review_count}개가 관측되어 신뢰도 판단에 반영했습니다")
+    elif rating is not None:
+        parts.append(f"카카오 장소 지표에서 평점 {rating}이 관측되어 품질 판단에 반영했습니다")
+    elif review_count is not None:
+        parts.append(f"카카오 장소 지표에서 리뷰 {review_count}개가 관측되어 참고했습니다")
+
+    price_level = restaurant.get("price_level")
+    if price_level is not None:
+        parts.append(f"가격대 지표 {price_level}도 함께 비교했습니다")
+
+    operation = restaurant.get("operation") or {}
+    if operation.get("open_time"):
+        parts.append(f"영업 시간 정보({operation.get('open_time')})가 확인됩니다")
+
+    if any("날씨" in reason for reason in reasons):
+        parts.append("요청 또는 현재 날씨와 맞는 음식/이동 조건도 점수에 반영했습니다")
+    if any("술자리" in reason for reason in reasons):
+        parts.append("술자리 목적과 맞는 업종 단서가 있어 우선 검토했습니다")
+
+    if not parts:
+        return (
+            "Kakao Local API 장소 검색 결과의 위치, 카테고리, 거리 정보를 비교했습니다."
+            if source == "Kakao Local API"
+            else "한국관광공사 TourAPI 등록 정보의 주소, 거리, 상세정보를 비교했습니다."
+        )
+    return ". ".join(parts[:5]) + "."
+
+
 def _keyword_restaurants(
     food_query: str | None,
     reference_coordinates: dict[str, float] | None,
@@ -1918,11 +1978,7 @@ def rank_tourapi_restaurants(
         ranked = candidate.copy()
         ranked["score"] = score
         ranked["score_reasons"] = reasons
-        ranked["recommendation_reason"] = (
-            "Kakao Local API 장소 검색 결과 기준으로 주소, 거리, 카테고리, 요청 조건 일치도를 반영했습니다."
-            if ranked.get("source") == "Kakao Local API"
-            else "한국관광공사 TourAPI 등록 정보 기준으로 주소, 거리, 상세정보 충실도, 요청 조건 일치도를 반영했습니다."
-        )
+        ranked["recommendation_reason"] = _build_public_recommendation_reason(ranked, reasons, policy)
         ranked_candidates.append(ranked)
 
     ranked_candidates.sort(
