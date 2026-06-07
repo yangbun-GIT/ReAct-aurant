@@ -1215,6 +1215,15 @@ def render_dashboard() -> str:
 
         const cardMatch = line.match(/^(\\d+)\\.\\s+(.+?)(?:\\s+\\((.+)\\))?$/);
         if (cardMatch) {{
+          const candidateName = cardMatch[2] || '';
+          if (candidateName.includes('**') || candidateName.includes('검색어') || candidateName.includes('음식 종류')) {{
+            if (reflection.length > 0) {{
+              reflection.push(line);
+            }} else {{
+              intro.push(line.replace(/^[-*]\\s*/, ''));
+            }}
+            continue;
+          }}
           if (current) cards.push(current);
           current = {{
             rank: cardMatch[1],

@@ -1224,6 +1224,41 @@ class LocalRestaurantToolTests(unittest.TestCase):
 
 
 class PublicReflectionTests(unittest.TestCase):
+    def test_kakao_ranking_penalizes_closed_not_before_open(self) -> None:
+        base = {
+            "restaurant_id": "kakao:bar",
+            "name": "Bar",
+            "source": "Kakao Local API",
+            "address": "전북특별자치도 전주시 완산구 전주객사1길 1",
+            "cuisine": "바",
+            "category_codes": {"cat1": "KAKAO_LOCAL"},
+            "metadata_quality_score": 6,
+            "metadata_quality_checks": ["카카오 장소 링크 제공"],
+            "distance_m": 300,
+            "distance_reference": "객사",
+        }
+        policy = {"cuisine": "바", "purpose": "술자리", "max_distance_m": 1200}
+
+        before_open = {
+            **base,
+            "opening_status": {"code": "BEFORE_OPEN", "display_text": "영업 전"},
+            "is_currently_unavailable": True,
+            "is_today_closed": False,
+        }
+        closed = {
+            **base,
+            "opening_status": {"code": "CLOSED", "display_text": "오늘 휴무"},
+            "is_currently_unavailable": True,
+            "is_today_closed": True,
+        }
+
+        before_score, before_reasons = _score_public_restaurant(before_open, policy)
+        closed_score, closed_reasons = _score_public_restaurant(closed, policy)
+
+        self.assertFalse(any("closed today" in reason for reason in before_reasons))
+        self.assertTrue(any("closed today" in reason for reason in closed_reasons))
+        self.assertLess(closed_score, before_score)
+
     def test_reflect_public_recommendations_does_not_require_fake_reviews(self) -> None:
         parsed = ParsedRequest(
             location="전주",
@@ -1341,6 +1376,35 @@ class PublicReflectionTests(unittest.TestCase):
 
 
 class KakaoMetricEnrichmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_metric_judgment_can_allow_unknown_metrics_during_recovery(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine="바",
+            min_rating=3.5,
+            min_review_count=0,
+        )
+
+        judgment = _observed_metric_judgment(
+            {
+                "place_url": "https://place.map.kakao.com/unknown",
+                "place_name": "Metric Unknown Bar",
+                "metrics_status": "not_found",
+                "rating": None,
+                "review_count": None,
+                "condition_checks": {"rating": None, "review_count": None, "price_level": None},
+                "business_status_observed": True,
+                "opening_status": {"code": "BEFORE_OPEN", "display_text": "영업 전", "today_hours": "18:00 ~ 02:00"},
+                "is_today_closed": False,
+                "is_currently_unavailable": True,
+            },
+            parsed,
+            allow_unknown_metrics=True,
+        )
+
+        self.assertEqual(judgment["status"], "observed")
+        self.assertTrue(judgment["meets_conditions"])
+        self.assertIn("보류 통과", judgment["reason"])
+
     async def test_metric_judgment_rejects_closed_place_even_with_good_metrics(self) -> None:
         parsed = ParsedRequest(
             location="?꾩＜ 媛앹궗",

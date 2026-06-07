@@ -1260,11 +1260,14 @@ def _score_public_restaurant(
             score += min(10, metadata_score * 2)
             reasons.append(f"공식 메타데이터 검증 {metadata_score}점: {', '.join(metadata_checks[:4])}")
 
+    opening_status = restaurant.get("opening_status") if isinstance(restaurant.get("opening_status"), dict) else {}
+    opening_code = str(opening_status.get("code") or "").strip().upper()
     if restaurant.get("source") == "Kakao Local API" and (
-        restaurant.get("is_currently_unavailable") is True or restaurant.get("is_today_closed") is True
+        restaurant.get("is_today_closed") is True
+        or opening_code in {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "TEMPORARILY_CLOSED"}
     ):
         score -= 200
-        reasons.append("Kakao place status unavailable today")
+        reasons.append("Kakao place status closed today")
 
     desired_cuisine = ranking_policy.get("cuisine")
     strict_food_requested = bool(desired_cuisine and str(desired_cuisine) in STRICT_FOOD_QUERIES)

@@ -1533,9 +1533,9 @@ async def append_llm_fallback_recommendation(
 
     system_prompt = (
         "너는 전주시 맛집 추천 Agent의 마지막 fallback이다. 이 단계는 Kakao Local API/TourAPI에서 조건을 충족하는 "
-        "후보를 찾지 못한 경우에만 호출된다. 실제 API로 검증된 결과가 아니므로 평점, 리뷰 수, 가격대, 영업시간, 주소를 "
-        "새로 만들지 않는다. 전주 지역 상권 지식과 사용자의 조건을 바탕으로 'LLM 참고 추천' 섹션을 작성하되, "
-        "각 항목은 음식 종류/상권/추천 검색어/확인 필요 사항 중심으로 제시한다. 특정 상호명을 쓸 때는 '확인 필요'라고 표시한다."
+        "후보를 찾지 못한 경우에만 호출된다. 실제 API로 검증된 결과가 아니므로 상호명, 평점, 리뷰 수, 가격대, 영업시간, 주소를 "
+        "새로 만들지 않는다. 답변은 추천 카드가 아니라 '다음 검색 제안'과 '추가 확인 질문'으로만 작성한다. "
+        "숫자 목록을 쓰지 말고 하이픈 bullet만 사용한다."
     )
     user_prompt = json.dumps(
         {
@@ -1543,8 +1543,9 @@ async def append_llm_fallback_recommendation(
             "parsed_request": parsed.model_dump(),
             "data_source": data_source,
             "instruction": (
-                "최종 답변 뒤에 붙일 한국어 fallback 섹션만 작성. 제목은 'LLM 참고 추천'으로 시작. "
-                "3개 이하 항목, API 미검증 고지 포함."
+                "최종 답변 뒤에 붙일 한국어 fallback 섹션만 작성. 제목은 '다음 검색 제안'으로 시작. "
+                "숫자 목록 금지. 특정 상호명 금지. 검색어 2~3개와 사용자에게 물어볼 추가 질문 2개를 bullet로 작성. "
+                "API 미검증 고지 포함."
             ),
         },
         ensure_ascii=False,
@@ -1604,7 +1605,12 @@ def _opening_unavailable_reason(observation: dict[str, Any]) -> str | None:
     return None
 
 
-def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest) -> dict[str, Any]:
+def _observed_metric_judgment(
+    observation: dict[str, Any],
+    parsed: ParsedRequest,
+    *,
+    allow_unknown_metrics: bool = False,
+) -> dict[str, Any]:
     rating = observation.get("rating")
     review_count = observation.get("review_count")
     price_level = observation.get("price_level")
@@ -1615,11 +1621,11 @@ def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest
         failed.append(unavailable_reason)
     if checks.get("rating") is False:
         failed.append(f"평점 {rating} < 최소 {parsed.min_rating}")
-    elif rating is None:
+    elif rating is None and not allow_unknown_metrics:
         failed.append(f"평점 미관측 < 최소 {parsed.min_rating} 조건 검증 불가")
     if checks.get("review_count") is False:
         failed.append(f"리뷰 수 {review_count} < 최소 {parsed.min_review_count}")
-    elif review_count is None:
+    elif review_count is None and not allow_unknown_metrics:
         failed.append(f"리뷰 수 미관측 < 최소 {parsed.min_review_count} 조건 검증 불가")
     if checks.get("price_level") is False:
         failed.append(f"가격대 {price_level} > 최대 {parsed.max_price_level}")
@@ -1636,13 +1642,66 @@ def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest
         "opening_status": observation.get("opening_status"),
         "is_currently_unavailable": observation.get("is_currently_unavailable"),
         "is_today_closed": observation.get("is_today_closed"),
-        "meets_conditions": False if failed else (True if observed else None),
-        "reason": "; ".join(failed) if failed else ("관측된 지표는 요청 조건을 위반하지 않습니다." if observed else "장소 페이지에서 지표를 확인하지 못했습니다."),
+        "meets_conditions": False if failed else (True if observed or allow_unknown_metrics else None),
+        "reason": "; ".join(failed) if failed else ("관측된 지표는 요청 조건을 위반하지 않습니다." if observed else "장소 페이지에서 평점/리뷰 지표를 확인하지 못했지만, 자동 재검색 단계에서 위치·업종·영업 상태 기준으로 보류 통과했습니다."),
     }
 
 
 def _normalize_kakao_place_url(value: Any) -> str:
     return re.sub(r"^http://", "https://", str(value or "").strip())
+
+
+def _replace_condition(conditions: list[str], prefix: str, replacement: str) -> list[str]:
+    updated: list[str] = []
+    replaced = False
+    for condition in conditions:
+        if condition.startswith(prefix):
+            updated.append(replacement)
+            replaced = True
+        else:
+            updated.append(condition)
+    if not replaced:
+        updated.append(replacement)
+    return updated
+
+
+def _build_kakao_recovery_parsed(parsed: ParsedRequest, reason: str) -> ParsedRequest:
+    recovered = parsed.model_copy(deep=True)
+    original_rating = parsed.min_rating
+    original_review_count = parsed.min_review_count
+    recovered.min_rating = min(float(parsed.min_rating), 3.5)
+    recovered.min_review_count = 0
+    recovered.max_distance_m = max(int(parsed.max_distance_m or 1000), 1200)
+    recovered.extracted_conditions = _replace_condition(
+        recovered.extracted_conditions,
+        "최소평점=",
+        f"최소평점={recovered.min_rating}",
+    )
+    recovered.extracted_conditions = _replace_condition(
+        recovered.extracted_conditions,
+        "최소리뷰수=",
+        f"최소리뷰수={recovered.min_review_count}",
+    )
+    recovered.extracted_conditions = _replace_condition(
+        recovered.extracted_conditions,
+        "최대거리=",
+        f"최대거리={recovered.max_distance_m}m",
+    )
+    recovered.handled_exceptions.append(
+        {
+            "type": "kakao_auto_recovery_search",
+            "severity": "info",
+            "message": (
+                f"1차 조건(최소평점 {original_rating}, 최소리뷰수 {original_review_count})을 만족하는 "
+                "검증 후보가 부족합니다."
+            ),
+            "recovery": (
+                f"{reason} 위치와 업종 의도는 유지하고, 평점 기준은 {recovered.min_rating}, "
+                "리뷰 수 기준은 보조 조건으로 완화해 같은 입력 안에서 재검색했습니다."
+            ),
+        }
+    )
+    return recovered
 
 
 def _metric_condition_checks(
@@ -1689,9 +1748,11 @@ def _merge_llm_metric_judgment(
     source_observation: dict[str, Any],
     llm_judgment: dict[str, Any],
     parsed: ParsedRequest,
+    *,
+    allow_unknown_metrics: bool = False,
 ) -> dict[str, Any]:
     if source_observation.get("metrics_status") == "not_found":
-        return _observed_metric_judgment(source_observation, parsed)
+        return _observed_metric_judgment(source_observation, parsed, allow_unknown_metrics=allow_unknown_metrics)
 
     source_rating = _valid_llm_rating(source_observation.get("rating"))
     source_review_count = _valid_llm_review_count(source_observation.get("review_count"))
@@ -1722,7 +1783,11 @@ def _merge_llm_metric_judgment(
             parsed=parsed,
         ),
     }
-    deterministic = _observed_metric_judgment(merged_observation, parsed)
+    deterministic = _observed_metric_judgment(
+        merged_observation,
+        parsed,
+        allow_unknown_metrics=allow_unknown_metrics,
+    )
     reason = str(llm_judgment.get("reason") or "").strip()
     if reason and deterministic.get("meets_conditions") is not False:
         deterministic["reason"] = reason
@@ -1737,8 +1802,12 @@ async def run_llm_kakao_metric_judgment(
     trace: TraceLogger,
     messages_count: int,
     use_llm: bool,
+    allow_unknown_metrics: bool = False,
 ) -> list[dict[str, Any]]:
-    fallback = [_observed_metric_judgment(observation, parsed) for observation in metric_observations]
+    fallback = [
+        _observed_metric_judgment(observation, parsed, allow_unknown_metrics=allow_unknown_metrics)
+        for observation in metric_observations
+    ]
     if not should_use_llm(use_llm):
         trace.write(
             agent_name="Kakao Place Metric Judge",
@@ -1806,7 +1875,14 @@ async def run_llm_kakao_metric_judgment(
             if not isinstance(judgment, dict):
                 continue
             source_observation = by_url.get(_normalize_kakao_place_url(judgment.get("place_url"))) or {}
-            normalized.append(_merge_llm_metric_judgment(source_observation, judgment, parsed))
+            normalized.append(
+                _merge_llm_metric_judgment(
+                    source_observation,
+                    judgment,
+                    parsed,
+                    allow_unknown_metrics=allow_unknown_metrics,
+                )
+            )
         if not normalized:
             normalized = fallback
         trace.write(
@@ -1842,6 +1918,7 @@ async def enrich_kakao_candidates_with_place_metrics(
     use_llm: bool,
     enabled: bool,
     max_items: int = 8,
+    allow_unknown_metrics: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     if not enabled:
         return candidates, "장소 링크 지표 보강은 비활성화되어 기존 Kakao Local 공식 메타데이터 검증을 사용했습니다."
@@ -1879,6 +1956,7 @@ async def enrich_kakao_candidates_with_place_metrics(
         trace=trace,
         messages_count=len(messages),
         use_llm=use_llm,
+        allow_unknown_metrics=allow_unknown_metrics,
     )
     judgment_by_url = {_normalize_kakao_place_url(item.get("place_url")): item for item in judgments if item.get("place_url")}
     enriched: list[dict[str, Any]] = []
@@ -2220,6 +2298,87 @@ async def run_agent(
                             deterministic_reflection += " " + metric_reflection
                     elif metric_reflection:
                         deterministic_reflection += " " + metric_reflection
+                    if not recommendations:
+                        recovery_parsed = _build_kakao_recovery_parsed(parsed, metric_reflection or deterministic_reflection)
+                        trace.write(
+                            agent_name="Kakao Recovery Planner",
+                            pattern="Reflection + Plan-and-Solve Pattern",
+                            thought_summary="1차 Kakao 후보가 요청 조건을 충족하지 못해 위치와 업종은 유지하고 평점/리뷰 기준만 완화해 재검색합니다.",
+                            observation={
+                                "original_conditions": parsed.model_dump(),
+                                "recovery_conditions": recovery_parsed.model_dump(),
+                            },
+                            messages_count=len(messages),
+                        )
+                        retry_observation = await public_client.call_tool(
+                            ToolAction(
+                                agent_name="Public Data Agent",
+                                pattern="ReAct Pattern",
+                                tool_name="search_kakao_local_places",
+                                tool_input={
+                                    "area": recovery_parsed.location,
+                                    "cuisine": recovery_parsed.cuisine,
+                                    "max_price_level": recovery_parsed.max_price_level,
+                                    "min_rating": recovery_parsed.min_rating,
+                                    "min_review_count": recovery_parsed.min_review_count,
+                                    "max_distance_m": recovery_parsed.max_distance_m,
+                                    "near_gaeksa": near_gaeksa,
+                                    "limit": 30,
+                                },
+                                mcp_server="public_data_server.py",
+                                thought_summary="Thought: 검증 통과 후보가 없어 같은 입력 안에서 평점/리뷰 기준을 완화한 Kakao Local 재검색을 수행합니다.",
+                            )
+                        )
+                        messages.append({"role": "tool", "content": f"Observation: {retry_observation.summary}"})
+                        retry_payload = retry_observation.data
+                        if retry_payload.get("status") == "ok" and retry_payload.get("count", 0) > 0:
+                            retry_candidates = retry_payload.get("candidates", [])
+                            retry_metric_reflection = ""
+                            if enrich_kakao_place_metrics:
+                                retry_candidates, retry_metric_reflection = await enrich_kakao_candidates_with_place_metrics(
+                                    candidates=retry_candidates,
+                                    parsed=recovery_parsed,
+                                    public_client=public_client,
+                                    trace=trace,
+                                    messages=messages,
+                                    use_llm=use_llm,
+                                    enabled=True,
+                                    max_items=24,
+                                    allow_unknown_metrics=True,
+                                )
+                            retry_rank_observation = await public_client.call_tool(
+                                ToolAction(
+                                    agent_name="Public Data Agent",
+                                    pattern="ReAct Pattern",
+                                    tool_name="rank_tourapi_restaurants",
+                                    tool_input={
+                                        "candidates": retry_candidates,
+                                        "ranking_policy": build_ranking_policy(
+                                            recovery_parsed,
+                                            weather_observation.data,
+                                            profile_observation.data,
+                                        ),
+                                    },
+                                    mcp_server="public_data_server.py",
+                                    thought_summary="Thought: 자동 재검색 후보를 위치, 업종, 영업 상태, 관측 지표 기준으로 다시 정렬합니다.",
+                                )
+                            )
+                            messages.append({"role": "tool", "content": f"Observation: {retry_rank_observation.summary}"})
+                            retry_ranked = retry_rank_observation.data.get("ranked_candidates", [])
+                            if retry_ranked:
+                                retry_recommendations, retry_reflection = reflect_public_recommendations(
+                                    retry_ranked,
+                                    recovery_parsed,
+                                )
+                                if retry_recommendations:
+                                    parsed = recovery_parsed
+                                    recommendations = retry_recommendations
+                                    deterministic_reflection += (
+                                        " 자동 재검색을 수행해 위치와 업종 의도는 유지하고 평점/리뷰 기준만 완화했습니다. "
+                                        + retry_reflection
+                                    )
+                                    if retry_metric_reflection:
+                                        deterministic_reflection += " " + retry_metric_reflection
                 else:
                     kakao_issue = {
                         "type": "kakao_local_unavailable",
