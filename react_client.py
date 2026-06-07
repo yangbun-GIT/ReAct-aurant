@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from jeonju_gazetteer import jeonju_alias_terms, jeonju_detail_area_aliases
 from public_data_server import CUISINE_KEYWORDS as PUBLIC_CUISINE_KEYWORDS
 from public_data_server import _food_query_terms as public_food_query_terms
+from public_data_server import _is_non_meal_place_for_general_request as public_is_non_meal_place_for_general_request
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -1040,6 +1041,19 @@ def reflect_public_recommendations(
     strict_food = bool(parsed.cuisine)
     source_names = {str(candidate.get("source")) for candidate in ranked_candidates if candidate.get("source")}
     uses_kakao = "Kakao Local API" in source_names
+    general_meal_request = _is_general_public_meal_request(parsed)
+    if general_meal_request:
+        original_count = len(ranked_candidates)
+        ranked_candidates = [
+            candidate
+            for candidate in ranked_candidates
+            if not public_is_non_meal_place_for_general_request(candidate)
+        ]
+        removed_count = original_count - len(ranked_candidates)
+        if removed_count:
+            warnings.append(
+                f"일반 맛집 요청이므로 술집, 바, 카페, 베이커리처럼 식사 목적과 다른 후보 {removed_count}곳을 제외했습니다."
+            )
 
     for candidate in ranked_candidates:
         if parsed.cuisine and not _public_candidate_matches_cuisine(candidate, parsed.cuisine):
@@ -1091,6 +1105,14 @@ def reflect_public_recommendations(
     if warnings:
         reflection += " " + " ".join(warnings)
     return accepted[: parsed.limit], reflection
+
+
+def _is_general_public_meal_request(parsed: ParsedRequest) -> bool:
+    if parsed.cuisine:
+        return False
+    if any(term in str(parsed.purpose or "") for term in ["혼술", "술자리", "한잔"]):
+        return False
+    return True
 
 
 def _expanded_public_cuisine_terms(cuisine: str) -> list[str]:

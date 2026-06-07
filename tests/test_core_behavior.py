@@ -1797,6 +1797,78 @@ class PublicReflectionTests(unittest.TestCase):
         self.assertIn("일본식라면 의도는 엄격히 유지했습니다", reflection)
         self.assertNotIn("대체 후보를 보완", reflection)
 
+    def test_reflect_public_recommendations_excludes_bar_for_general_matjip(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 전북대",
+            cuisine=None,
+            purpose="일반 식사",
+            limit=3,
+            extracted_conditions=["지역=전주 전북대", "목적=일반 식사"],
+        )
+        ranked = [
+            {
+                "restaurant_id": "kakao:bar",
+                "name": "아람",
+                "cuisine": "바",
+                "source": "Kakao Local API",
+                "overview": "Kakao Local category: 음식점 > 술집 > 바",
+                "category_codes": {"cat3": "음식점 > 술집 > 바"},
+            },
+            {
+                "restaurant_id": "kakao:meal",
+                "name": "팀 전북대점",
+                "cuisine": "양식",
+                "source": "Kakao Local API",
+                "overview": "Kakao Local category: 음식점 > 양식",
+                "category_codes": {"cat3": "음식점 > 양식"},
+            },
+        ]
+
+        recommendations, reflection = reflect_public_recommendations(ranked, parsed)
+
+        self.assertEqual([item["restaurant_id"] for item in recommendations], ["kakao:meal"])
+        self.assertIn("일반 맛집 요청이므로", reflection)
+        self.assertNotIn("아람", [item["name"] for item in recommendations])
+
+    def test_reflect_public_recommendations_excludes_light_places_for_general_matjip(self) -> None:
+        parsed = ParsedRequest(
+            location="전주 객사",
+            cuisine=None,
+            purpose="일반 식사",
+            limit=3,
+            extracted_conditions=["지역=전주 객사", "목적=일반 식사"],
+        )
+        ranked = [
+            {
+                "restaurant_id": "kakao:cafe",
+                "name": "객사커피",
+                "cuisine": "커피전문점",
+                "source": "Kakao Local API",
+                "overview": "Kakao Local category: 음식점 > 카페 > 커피전문점",
+                "category_codes": {"cat3": "음식점 > 카페 > 커피전문점"},
+            },
+            {
+                "restaurant_id": "kakao:bakery",
+                "name": "객사베이커리",
+                "cuisine": "베이커리",
+                "source": "Kakao Local API",
+                "overview": "Kakao Local category: 음식점 > 제과,베이커리",
+                "category_codes": {"cat3": "음식점 > 제과,베이커리"},
+            },
+            {
+                "restaurant_id": "kakao:meal",
+                "name": "전주국밥",
+                "cuisine": "국밥",
+                "source": "Kakao Local API",
+                "overview": "Kakao Local category: 음식점 > 한식 > 국밥",
+                "category_codes": {"cat3": "음식점 > 한식 > 국밥"},
+            },
+        ]
+
+        recommendations, _ = reflect_public_recommendations(ranked, parsed)
+
+        self.assertEqual([item["restaurant_id"] for item in recommendations], ["kakao:meal"])
+
     def test_public_final_answer_shows_requested_weather_before_actual_weather(self) -> None:
         parsed = ParsedRequest(
             location="전주 웨리단길",
