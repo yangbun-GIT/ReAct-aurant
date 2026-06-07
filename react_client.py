@@ -545,6 +545,17 @@ def infer_max_distance_m(query: str, location: str, requested_weather: str | Non
     )
     bad_weather = requested_weather in {"비", "눈"}
 
+    broad_campus_area = location == "전주 전북대" or (
+        _contains_any(query, ["전북대", "전북대학교", "전대", "북대"]) and not _contains_any(query, ["구정문", "신정문", "정문", "한옥정문"])
+    )
+    specific_campus_gate = _contains_any(location, ["전북대 구정문", "전북대 신정문"]) or _contains_any(
+        query,
+        ["구정문", "신정문", "정문", "한옥정문"],
+    )
+    if wants_surrounding and broad_campus_area:
+        return 1400 if bad_weather else 1800
+    if wants_surrounding and specific_campus_gate:
+        return 900 if bad_weather else 1200
     if wants_surrounding and narrow_commercial_area:
         return 900 if bad_weather else 1000
     if wants_surrounding and compact_area:
@@ -775,6 +786,24 @@ def infer_recommendation_limit(query: str) -> int:
     return 3
 
 
+def describe_location_scope(query: str, location: str, max_distance_m: int) -> str:
+    if re.search(r"\d{2,4}\s*m", query.lower()):
+        return f"사용자 지정 반경 {max_distance_m}m"
+    if location == "전주 전북대":
+        return f"전북대 캠퍼스 주변 상권 반경 {max_distance_m}m(구정문·신정문 권역 포함)"
+    if "전북대 구정문" in location:
+        return f"전북대 구정문 중심 상권 반경 {max_distance_m}m"
+    if "전북대 신정문" in location:
+        return f"전북대 신정문 중심 상권 반경 {max_distance_m}m"
+    if "객사" in location:
+        return f"객사·객리단길 상권 중심 반경 {max_distance_m}m"
+    if _contains_any(location, ["웨리단길", "한옥마을", "신시가지", "에코시티"]):
+        return f"{location.replace('전주 ', '')} 상권 중심 반경 {max_distance_m}m"
+    if _contains_any(query, ["근처", "주변", "인근", "부근", "일대"]):
+        return f"요청 위치 주변 반경 {max_distance_m}m"
+    return f"요청 위치 중심 반경 {max_distance_m}m"
+
+
 def parse_user_request(query: str) -> ParsedRequest:
     conditions: list[str] = []
     missing_conditions: list[str] = []
@@ -875,6 +904,7 @@ def parse_user_request(query: str) -> ParsedRequest:
     conditions.append(f"최소리뷰수={min_review_count}")
     max_distance_m = infer_max_distance_m(query, location, requested_weather)
     conditions.append(f"최대거리={max_distance_m}m")
+    conditions.append(f"검색범위={describe_location_scope(query, location, max_distance_m)}")
     limit = infer_recommendation_limit(query)
     if limit != 3:
         conditions.append(f"추천개수={limit}")
@@ -1760,7 +1790,7 @@ def _relaxed_review_threshold(value: int | None) -> int:
     return max(int(value), 5)
 
 
-def _build_kakao_recovery_parsed(parsed: ParsedRequest, reason: str) -> ParsedRequest:
+def _build_kakao_recovery_parsed(parsed: ParsedRequest, reason: str, query: str = "") -> ParsedRequest:
     recovered = parsed.model_copy(deep=True)
     original_rating = parsed.min_rating
     original_review_count = parsed.min_review_count
@@ -1781,6 +1811,11 @@ def _build_kakao_recovery_parsed(parsed: ParsedRequest, reason: str) -> ParsedRe
         recovered.extracted_conditions,
         "최대거리=",
         f"최대거리={recovered.max_distance_m}m",
+    )
+    recovered.extracted_conditions = _replace_condition(
+        recovered.extracted_conditions,
+        "검색범위=",
+        f"검색범위={describe_location_scope(query, recovered.location, recovered.max_distance_m)}",
     )
     recovered.handled_exceptions.append(
         {
@@ -2394,7 +2429,11 @@ async def run_agent(
                     elif metric_reflection:
                         deterministic_reflection += " " + metric_reflection
                     if len(recommendations) < parsed.limit:
-                        recovery_parsed = _build_kakao_recovery_parsed(parsed, metric_reflection or deterministic_reflection)
+                        recovery_parsed = _build_kakao_recovery_parsed(
+                            parsed,
+                            metric_reflection or deterministic_reflection,
+                            query,
+                        )
                         trace.write(
                             agent_name="Kakao Recovery Planner",
                             pattern="Reflection + Plan-and-Solve Pattern",

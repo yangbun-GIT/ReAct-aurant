@@ -586,18 +586,13 @@ def _resolve_search_area_for_query(
 
 
 def _resolve_search_area_for_kakao_query(area: str | None, near_gaeksa: bool = False) -> dict[str, Any] | None:
-    if near_gaeksa:
-        fixed_area = _resolve_search_area(area, near_gaeksa=True)
-        if fixed_area is not None:
-            return {**fixed_area, "resolution_source": fixed_area.get("resolution_source", "Jeonju gazetteer")}
+    fixed_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
+    if fixed_area is not None:
+        return {**fixed_area, "resolution_source": fixed_area.get("resolution_source", "Jeonju gazetteer")}
 
     kakao_area = _resolve_search_area_from_kakao(area)
     if kakao_area is not None:
         return kakao_area
-
-    fixed_area = _resolve_search_area(area, near_gaeksa=near_gaeksa)
-    if fixed_area is not None:
-        return {**fixed_area, "resolution_source": fixed_area.get("resolution_source", "Jeonju gazetteer")}
     return None
 
 

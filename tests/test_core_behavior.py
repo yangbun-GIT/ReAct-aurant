@@ -23,6 +23,7 @@ from public_data_server import (
 )
 from react_client import (
     ParsedRequest,
+    _build_kakao_recovery_parsed,
     _observed_metric_judgment,
     _relaxed_rating_threshold,
     _relaxed_review_threshold,
@@ -154,7 +155,7 @@ class RequestParsingTests(unittest.TestCase):
                     self.assertEqual(parsed.location, f"전주 {expected_area}")
                     self.assertFalse(any(issue["type"] == "unsupported_or_unresolved_location" for issue in guard["issues"]))
 
-    def test_kakao_location_resolution_prefers_kakao_then_local_alias(self) -> None:
+    def test_kakao_location_resolution_prefers_local_gazetteer_then_kakao(self) -> None:
         captured_queries: list[str] = []
 
         def fake_kakao_request(path: str, params: dict[str, object]) -> dict[str, object]:
@@ -179,11 +180,13 @@ class RequestParsingTests(unittest.TestCase):
 
         with patch("public_data_server._kakao_request", side_effect=fake_kakao_request):
             kakao_area = _resolve_search_area_for_kakao_query("전주 도청")
+            unknown_area = _resolve_search_area_for_kakao_query("전주 새로생긴광장")
             local_area = _resolve_search_area_for_kakao_query("전주 전북대 신정문")
 
-        self.assertIn("도청", captured_queries)
-        self.assertEqual(kakao_area["resolution_source"], "Kakao Local API keyword search")
-        self.assertAlmostEqual(kakao_area["longitude"], 127.108976712012)
+        self.assertEqual(captured_queries, ["새로생긴광장", "전주 새로생긴광장"])
+        self.assertEqual(kakao_area["resolution_source"], "local_jeonju_gazetteer")
+        self.assertEqual(kakao_area["name"], "전북도청")
+        self.assertIsNone(unknown_area)
         self.assertEqual(local_area["name"], "전북대 신정문")
         self.assertEqual(local_area["resolution_source"], "local_jeonju_gazetteer")
 
@@ -277,6 +280,28 @@ class RequestParsingTests(unittest.TestCase):
                 self.assertEqual(parsed.location, "전주 객사")
                 self.assertEqual(parsed.max_distance_m, 1000)
                 self.assertIn("최대거리=1000m", parsed.extracted_conditions)
+
+    def test_broad_campus_area_includes_gate_commercial_zones(self) -> None:
+        parsed = parse_user_request("전북대 근처 맛집 추천해줘")
+
+        self.assertEqual(parsed.location, "전주 전북대")
+        self.assertEqual(parsed.max_distance_m, 1800)
+        self.assertIn("최대거리=1800m", parsed.extracted_conditions)
+        self.assertIn("검색범위=전북대 캠퍼스 주변 상권 반경 1800m(구정문·신정문 권역 포함)", parsed.extracted_conditions)
+
+    def test_specific_campus_gate_keeps_gate_centered_scope(self) -> None:
+        parsed = parse_user_request("전북대 구정문 근처 맛집 추천해줘")
+
+        self.assertEqual(parsed.location, "전주 전북대 구정문")
+        self.assertEqual(parsed.max_distance_m, 1200)
+        self.assertIn("검색범위=전북대 구정문 중심 상권 반경 1200m", parsed.extracted_conditions)
+
+    def test_kakao_recovery_refreshes_location_scope_condition(self) -> None:
+        parsed = parse_user_request("전주 객사 근처 맛집 추천해줘")
+        recovered = _build_kakao_recovery_parsed(parsed, "후보 부족", "전주 객사 근처 맛집 추천해줘")
+
+        self.assertIn("최대거리=1200m", recovered.extracted_conditions)
+        self.assertIn("검색범위=객사·객리단길 상권 중심 반경 1200m", recovered.extracted_conditions)
 
     def test_walkable_terms_keep_compact_area_narrower_than_surrounding_terms(self) -> None:
         parsed = parse_user_request("전주 객사에서 걸어서 가기 좋은 고기집 추천")
