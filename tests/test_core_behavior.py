@@ -113,6 +113,12 @@ class RequestParsingTests(unittest.TestCase):
             "전주 비전대 근처 카페 추천": "전주 비전대",
             "전주 병무청 근처 밥집 추천": "전주 노송동",
             "전북대 병원 근처 한식 추천": "전주 전북대병원",
+            "시외버스 정류장 쪽 맛집 추천해봐": "전주 전주터미널",
+            "전주 시외버스정류장 근처 국밥 추천": "전주 전주터미널",
+            "전주 고속 터미널 주변 카페 추천": "전주 전주터미널",
+            "전주 법원 근처 점심 추천": "전주 만성동",
+            "전주 검찰청 주변 밥집 추천": "전주 만성동",
+            "전주 월드컵경기장 근처 식당 추천": "전주 여의동",
         }
 
         for query, expected_location in cases.items():
@@ -222,7 +228,10 @@ class RequestParsingTests(unittest.TestCase):
     def test_parse_directional_place_before_matjip_not_as_cuisine(self) -> None:
         parsed = parse_user_request("시외버스 정류장 쪽 맛집 추천해봐")
 
+        self.assertEqual(parsed.location, "전주 전주터미널")
         self.assertIsNone(parsed.cuisine)
+        self.assertNotIn("지역=전주 객사", parsed.extracted_conditions)
+        self.assertFalse(any(condition.startswith("지역보정=") for condition in parsed.extracted_conditions))
         self.assertNotIn("음식종류=쪽", parsed.extracted_conditions)
 
     def test_parse_area_alias_does_not_become_cuisine_with_requested_weather(self) -> None:
