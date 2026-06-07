@@ -24,6 +24,8 @@ from public_data_server import (
 from react_client import (
     ParsedRequest,
     _observed_metric_judgment,
+    _relaxed_rating_threshold,
+    _relaxed_review_threshold,
     append_llm_fallback_recommendation,
     build_public_final_answer,
     build_ranking_policy,
@@ -63,6 +65,12 @@ class RequestParsingTests(unittest.TestCase):
         self.assertFalse(any(condition.startswith("최대가격대=") for condition in parsed.extracted_conditions))
         self.assertIn("최소평점=4.0", parsed.extracted_conditions)
         self.assertIn("최소리뷰수=20", parsed.extracted_conditions)
+
+    def test_recovery_quality_thresholds_do_not_drop_to_zero_reviews(self) -> None:
+        self.assertEqual(_relaxed_rating_threshold(4.2), 3.7)
+        self.assertEqual(_relaxed_review_threshold(50), 10)
+        self.assertEqual(_relaxed_review_threshold(20), 10)
+        self.assertEqual(_relaxed_review_threshold(0), 5)
 
     def test_parse_explicit_price_preference_only_when_user_requests_it(self) -> None:
         parsed = parse_user_request("전주 객사 일본식라면 추천 너무 비싸지 않게")
@@ -718,6 +726,70 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["query"]["queries"][0], "전주 객사 고기집")
         self.assertEqual(result["candidates"][0]["name"], "해율담")
         self.assertEqual(result["candidates"][0]["cuisine"], "육류,고기")
+
+    def test_kakao_search_reads_additional_pages_when_limit_requires_it(self) -> None:
+        captured_pages: list[int] = []
+
+        def fake_kakao_request(path: str, params: dict[str, object]) -> dict[str, object]:
+            if params["query"] != "전주 객사 맛집":
+                return {"status": "ok", "payload": {"documents": [], "meta": {"is_end": True}}}
+            page = int(params.get("page", 1))
+            captured_pages.append(page)
+            if page == 1:
+                return {
+                    "status": "ok",
+                    "payload": {
+                        "documents": [
+                            {
+                                "id": "outside-jeonju",
+                                "place_name": "전주아닌곳",
+                                "category_name": "음식점 > 한식",
+                                "category_group_code": "FD6",
+                                "category_group_name": "음식점",
+                                "road_address_name": "서울특별시 마포구 테스트로 1",
+                                "x": "126.9",
+                                "y": "37.5",
+                                "distance": "100",
+                            }
+                        ],
+                        "meta": {"is_end": False},
+                    },
+                }
+            return {
+                "status": "ok",
+                "payload": {
+                    "documents": [
+                        {
+                            "id": "page-2-place",
+                            "place_name": "두번째페이지맛집",
+                            "category_name": "음식점 > 한식",
+                            "category_group_code": "FD6",
+                            "category_group_name": "음식점",
+                            "road_address_name": "전북특별자치도 전주시 완산구 전주객사길 2",
+                            "x": "127.1467",
+                            "y": "35.8187",
+                            "distance": "120",
+                            "place_url": "http://place.map.kakao.com/page-2-place",
+                        }
+                    ],
+                    "meta": {"is_end": True},
+                },
+            }
+
+        with patch("public_data_server._kakao_request", side_effect=fake_kakao_request):
+            result = search_kakao_local_places(
+                area="전주 객사",
+                cuisine=None,
+                min_rating=3.7,
+                min_review_count=10,
+                max_distance_m=1000,
+                limit=30,
+            )
+
+        self.assertIn(1, captured_pages)
+        self.assertIn(2, captured_pages)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidates"][0]["name"], "두번째페이지맛집")
 
     def test_kakao_registered_food_keywords_use_area_qualified_expansion(self) -> None:
         captured_queries: list[str] = []
@@ -1427,8 +1499,8 @@ class KakaoMetricEnrichmentTests(unittest.IsolatedAsyncioTestCase):
         parsed = ParsedRequest(
             location="전주 객사",
             cuisine="바",
-            min_rating=3.5,
-            min_review_count=0,
+            min_rating=3.7,
+            min_review_count=10,
         )
 
         judgment = _observed_metric_judgment(

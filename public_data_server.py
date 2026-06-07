@@ -1690,30 +1690,38 @@ def search_kakao_local_places(
 
     places: list[dict[str, Any]] = []
     last_error: dict[str, Any] | None = None
+    max_pages_per_query = 3 if limit > 15 else 1
     for query in queries:
-        result = _kakao_request(
-            "search/keyword.json",
-            {
-                "query": query,
-                "x": search_area["longitude"],
-                "y": search_area["latitude"],
-                "radius": radius,
-                "sort": "distance",
-                "size": min(max(limit, 1), 15),
-            },
-        )
-        if result["status"] != "ok":
-            last_error = result
-            continue
-        for document in result.get("payload", {}).get("documents", []):
-            places.append(
-                _standardize_kakao_place(
-                    document,
-                    reference_coordinates=reference_coordinates,
-                    reference_name=search_area["name"],
-                    requested_keyword=query,
-                )
+        for page in range(1, max_pages_per_query + 1):
+            result = _kakao_request(
+                "search/keyword.json",
+                {
+                    "query": query,
+                    "x": search_area["longitude"],
+                    "y": search_area["latitude"],
+                    "radius": radius,
+                    "sort": "distance",
+                    "size": min(max(limit, 1), 15),
+                    "page": page,
+                },
             )
+            if result["status"] != "ok":
+                last_error = result
+                break
+            payload = result.get("payload", {})
+            documents = payload.get("documents", [])
+            for document in documents:
+                places.append(
+                    _standardize_kakao_place(
+                        document,
+                        reference_coordinates=reference_coordinates,
+                        reference_name=search_area["name"],
+                        requested_keyword=query,
+                    )
+                )
+            meta = payload.get("meta") or {}
+            if not documents or meta.get("is_end", True):
+                break
 
     places = _merge_restaurants(places)
     places = [place for place in places if _is_jeonju_restaurant(place)]

@@ -1680,12 +1680,28 @@ def _replace_condition(conditions: list[str], prefix: str, replacement: str) -> 
     return updated
 
 
+def _relaxed_rating_threshold(value: float | int | None) -> float:
+    if value is None:
+        return 3.7
+    return min(float(value), 3.7)
+
+
+def _relaxed_review_threshold(value: int | None) -> int:
+    if value is None:
+        return 10
+    if value >= 50:
+        return 10
+    if value >= 20:
+        return 10
+    return max(int(value), 5)
+
+
 def _build_kakao_recovery_parsed(parsed: ParsedRequest, reason: str) -> ParsedRequest:
     recovered = parsed.model_copy(deep=True)
     original_rating = parsed.min_rating
     original_review_count = parsed.min_review_count
-    recovered.min_rating = min(float(parsed.min_rating), 3.5)
-    recovered.min_review_count = 0
+    recovered.min_rating = _relaxed_rating_threshold(parsed.min_rating)
+    recovered.min_review_count = _relaxed_review_threshold(parsed.min_review_count)
     recovered.max_distance_m = max(int(parsed.max_distance_m or 1000), 1200)
     recovered.extracted_conditions = _replace_condition(
         recovered.extracted_conditions,
@@ -1712,7 +1728,7 @@ def _build_kakao_recovery_parsed(parsed: ParsedRequest, reason: str) -> ParsedRe
             ),
             "recovery": (
                 f"{reason} 위치와 업종 의도는 유지하고, 평점 기준은 {recovered.min_rating}, "
-                "리뷰 수 기준은 보조 조건으로 완화해 같은 입력 안에서 재검색했습니다."
+                f"리뷰 수 기준은 {recovered.min_review_count}개까지 완화해 같은 입력 안에서 재검색했습니다."
             ),
         }
     )
@@ -2770,8 +2786,8 @@ async def run_agent(
                     continue
 
                 relaxed_input = search_input.copy()
-                relaxed_input["min_review_count"] = 0
-                relaxed_input["min_rating"] = 4.0
+                relaxed_input["min_review_count"] = _relaxed_review_threshold(parsed.min_review_count)
+                relaxed_input["min_rating"] = _relaxed_rating_threshold(parsed.min_rating)
                 observation = await gourmet_client.call_tool(
                     ToolAction(
                         agent_name="Culinary Finder Agent",
@@ -2803,8 +2819,8 @@ async def run_agent(
                     parsed.extracted_conditions.append("음식종류조건완화=전체")
                     parsed.cuisine = None
                     relaxed_input = build_search_input(parsed)
-                    relaxed_input["min_review_count"] = 0
-                    relaxed_input["min_rating"] = 4.0
+                    relaxed_input["min_review_count"] = _relaxed_review_threshold(parsed.min_review_count)
+                    relaxed_input["min_rating"] = _relaxed_rating_threshold(parsed.min_rating)
                     observation = await gourmet_client.call_tool(
                         ToolAction(
                             agent_name="Culinary Finder Agent",
