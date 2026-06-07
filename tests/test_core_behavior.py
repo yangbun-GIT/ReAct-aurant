@@ -66,10 +66,16 @@ class RequestParsingTests(unittest.TestCase):
         self.assertIn("최소평점=4.0", parsed.extracted_conditions)
         self.assertIn("최소리뷰수=20", parsed.extracted_conditions)
 
+    def test_parse_requested_recommendation_count(self) -> None:
+        parsed = parse_user_request("전북대 구정문 근처 맛집 5가지 추천")
+
+        self.assertEqual(parsed.limit, 5)
+        self.assertIn("추천개수=5", parsed.extracted_conditions)
+
     def test_recovery_quality_thresholds_do_not_drop_to_zero_reviews(self) -> None:
         self.assertEqual(_relaxed_rating_threshold(4.2), 3.7)
-        self.assertEqual(_relaxed_review_threshold(50), 10)
-        self.assertEqual(_relaxed_review_threshold(20), 10)
+        self.assertEqual(_relaxed_review_threshold(50), 5)
+        self.assertEqual(_relaxed_review_threshold(20), 5)
         self.assertEqual(_relaxed_review_threshold(0), 5)
 
     def test_parse_explicit_price_preference_only_when_user_requests_it(self) -> None:
@@ -911,6 +917,17 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["candidates"][0]["name"], "두번째페이지맛집")
 
+    def test_general_matjip_kakao_queries_expand_to_meal_terms(self) -> None:
+        queries = _kakao_keyword_queries("맛집", {"name": "전북대 구정문"})
+
+        joined = " ".join(queries)
+        self.assertIn("전주 전북대 구정문 맛집", queries)
+        self.assertIn("밥집", joined)
+        self.assertIn("한식", joined)
+        self.assertIn("고기집", joined)
+        self.assertNotIn("바", joined)
+        self.assertNotIn("카페", joined)
+
     def test_general_matjip_kakao_search_excludes_bar_candidates(self) -> None:
         kakao_payload = {
             "documents": [
@@ -1574,6 +1591,51 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertIn("전주 주소 일치", reasons)
         self.assertIn("한식 조건 일치", reasons)
         self.assertIn("비 오는 날 이동 부담이 낮은 가까운 거리", reasons)
+
+    def test_general_meal_ranking_prefers_common_popular_food_over_niche(self) -> None:
+        policy = {
+            "purpose": "일반 식사",
+            "cuisine": None,
+            "target_location": "전주 전북대 구정문",
+            "max_distance_m": 1200,
+            "min_rating": 4.0,
+            "min_review_count": 20,
+        }
+        common = {
+            "restaurant_id": "kakao:common",
+            "name": "전북대국밥",
+            "cuisine": "한식",
+            "source": "Kakao Local API",
+            "address": "전북특별자치도 전주시 덕진구 명륜길 10",
+            "distance_m": 320,
+            "distance_reference": "전북대 구정문",
+            "category_codes": {"cat1": "A05", "cat3": "음식점 > 한식 > 국밥"},
+            "overview": "Kakao Local category: 음식점 > 한식 > 국밥",
+            "rating": 4.2,
+            "review_count": 80,
+            "metadata_quality_score": 5,
+        }
+        niche = {
+            "restaurant_id": "kakao:niche",
+            "name": "와우케밥치킨",
+            "cuisine": "튀르키예음식",
+            "source": "Kakao Local API",
+            "address": "전북특별자치도 전주시 덕진구 권삼득로 333",
+            "distance_m": 200,
+            "distance_reference": "전북대 구정문",
+            "category_codes": {"cat1": "A05", "cat3": "음식점 > 아시아음식 > 튀르키예음식"},
+            "overview": "Kakao Local category: 음식점 > 아시아음식 > 튀르키예음식",
+            "rating": 4.3,
+            "review_count": 28,
+            "metadata_quality_score": 5,
+        }
+
+        common_score, common_reasons = _score_public_restaurant(common, policy)
+        niche_score, niche_reasons = _score_public_restaurant(niche, policy)
+
+        self.assertGreater(common_score, niche_score)
+        self.assertIn("일반 맛집 요청에 맞는 보편적 식사 업종", common_reasons)
+        self.assertIn("일반 맛집 요청에서는 특색 음식 업종으로 후순위", niche_reasons)
 
     def test_weather_location_resolves_jeonju_detail_aliases(self) -> None:
         location = _resolve_weather_location("전주 웨리단길")

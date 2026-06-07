@@ -749,6 +749,32 @@ def detect_jeonju_location(query: str, cuisine: str | None = None) -> str | None
     return None
 
 
+def infer_recommendation_limit(query: str) -> int:
+    numeric_match = re.search(r"(\d{1,2})\s*(?:곳|개|가지|군데|개만|곳만)", query)
+    if numeric_match:
+        return max(1, min(int(numeric_match.group(1)), 10))
+    korean_counts = {
+        "한": 1,
+        "하나": 1,
+        "두": 2,
+        "둘": 2,
+        "세": 3,
+        "셋": 3,
+        "네": 4,
+        "넷": 4,
+        "다섯": 5,
+        "여섯": 6,
+        "일곱": 7,
+        "여덟": 8,
+        "아홉": 9,
+        "열": 10,
+    }
+    korean_match = re.search(r"(하나|다섯|여섯|일곱|여덟|아홉|열|한|두|둘|세|셋|네|넷)\s*(?:곳|개|가지|군데)", query)
+    if korean_match:
+        return korean_counts[korean_match.group(1)]
+    return 3
+
+
 def parse_user_request(query: str) -> ParsedRequest:
     conditions: list[str] = []
     missing_conditions: list[str] = []
@@ -849,6 +875,9 @@ def parse_user_request(query: str) -> ParsedRequest:
     conditions.append(f"최소리뷰수={min_review_count}")
     max_distance_m = infer_max_distance_m(query, location, requested_weather)
     conditions.append(f"최대거리={max_distance_m}m")
+    limit = infer_recommendation_limit(query)
+    if limit != 3:
+        conditions.append(f"추천개수={limit}")
 
     return ParsedRequest(
         location=location,
@@ -859,7 +888,7 @@ def parse_user_request(query: str) -> ParsedRequest:
         min_rating=min_rating,
         min_review_count=min_review_count,
         max_distance_m=max_distance_m,
-        limit=3,
+        limit=limit,
         extracted_conditions=conditions,
         fallback_location=fallback_location,
         fallback_reason=fallback_reason,
@@ -1634,13 +1663,15 @@ def _opening_unavailable_reason(observation: dict[str, Any]) -> str | None:
         str(opening.get(key) or "")
         for key in ["display_text", "display_text_info", "today", "today_hours", "today_closed_text"]
     )
-    closed_codes = {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "TEMPORARILY_CLOSED"}
-    closed_terms = ["휴무", "영업 종료", "영업종료", "정기휴무", "임시휴무", "폐업", "닫음", "마감"]
+    closed_codes = {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "DAY_OFF", "TEMPORARILY_CLOSED"}
+    closed_terms = ["휴무", "영업 종료", "영업종료", "정기휴무", "임시휴무", "폐업", "닫음"]
     closed_for_day = (
         observation.get("is_today_closed") is True
         or code in closed_codes
         or any(term in status_text_source for term in closed_terms)
     )
+    if code == "CLOSING_SOON":
+        closed_for_day = False
     if closed_for_day:
         status_parts = [
             str(opening.get("display_text") or "").strip(),
@@ -1721,11 +1752,11 @@ def _relaxed_rating_threshold(value: float | int | None) -> float:
 
 def _relaxed_review_threshold(value: int | None) -> int:
     if value is None:
-        return 10
+        return 5
     if value >= 50:
-        return 10
+        return 5
     if value >= 20:
-        return 10
+        return 5
     return max(int(value), 5)
 
 
@@ -2337,7 +2368,7 @@ async def run_agent(
                             messages=messages,
                             use_llm=use_llm,
                             enabled=True,
-                            max_items=24,
+                            max_items=30,
                         )
                     kakao_rank_observation = await public_client.call_tool(
                         ToolAction(
@@ -2362,15 +2393,17 @@ async def run_agent(
                             deterministic_reflection += " " + metric_reflection
                     elif metric_reflection:
                         deterministic_reflection += " " + metric_reflection
-                    if not recommendations:
+                    if len(recommendations) < parsed.limit:
                         recovery_parsed = _build_kakao_recovery_parsed(parsed, metric_reflection or deterministic_reflection)
                         trace.write(
                             agent_name="Kakao Recovery Planner",
                             pattern="Reflection + Plan-and-Solve Pattern",
-                            thought_summary="1차 Kakao 후보가 요청 조건을 충족하지 못해 위치와 업종은 유지하고 평점/리뷰 기준만 완화해 재검색합니다.",
+                            thought_summary="1차 Kakao 후보가 요청 개수 또는 조건을 충족하지 못해 위치와 업종은 유지하고 평점/리뷰 기준만 완화해 재검색합니다.",
                             observation={
                                 "original_conditions": parsed.model_dump(),
                                 "recovery_conditions": recovery_parsed.model_dump(),
+                                "accepted_count": len(recommendations),
+                                "requested_limit": parsed.limit,
                             },
                             messages_count=len(messages),
                         )
@@ -2407,8 +2440,8 @@ async def run_agent(
                                     messages=messages,
                                     use_llm=use_llm,
                                     enabled=True,
-                                    max_items=24,
-                                    allow_unknown_metrics=True,
+                                    max_items=30,
+                                    allow_unknown_metrics=False,
                                 )
                             retry_rank_observation = await public_client.call_tool(
                                 ToolAction(
@@ -2434,11 +2467,11 @@ async def run_agent(
                                     retry_ranked,
                                     recovery_parsed,
                                 )
-                                if retry_recommendations:
+                                if retry_recommendations and len(retry_recommendations) > len(recommendations):
                                     parsed = recovery_parsed
                                     recommendations = retry_recommendations
                                     deterministic_reflection += (
-                                        " 자동 재검색을 수행해 위치와 업종 의도는 유지하고 평점/리뷰 기준만 완화했습니다. "
+                                        " 자동 재검색을 수행해 위치와 업종 의도는 유지하고 평점/리뷰 기준만 완화해 부족한 추천 개수를 보완했습니다. "
                                         + retry_reflection
                                     )
                                     if retry_metric_reflection:

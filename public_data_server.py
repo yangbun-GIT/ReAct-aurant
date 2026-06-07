@@ -130,6 +130,67 @@ KAKAO_BAKERY_KEYWORDS = ["빵집", "베이커리", "제과점", "제빵소"]
 KAKAO_DESSERT_CAFE_KEYWORDS = ["디저트카페", "디저트 카페", "빙수", "케이크"]
 KAKAO_MEAT_KEYWORDS = ["고기집", "육류고기", "갈비", "삼겹살", "구이", "불고기", "곱창", "막창"]
 KAKAO_MEAT_QUERY_TERMS = {"고기", "고기집", "고깃집", "육류", "육류고기", "갈비", "삼겹", "삼겹살", "구이", "불고기", "곱창", "막창"}
+KAKAO_GENERAL_MEAL_KEYWORDS = [
+    "맛집",
+    "밥집",
+    "식당",
+    "한식",
+    "국밥",
+    "백반",
+    "분식",
+    "일식",
+    "중식",
+    "양식",
+    "고기집",
+    "치킨",
+    "찜닭",
+]
+GENERAL_MEAL_QUERY_TERMS = {"맛집", "음식점", "식당", "밥집"}
+COMMON_GENERAL_MEAL_TERMS = [
+    "한식",
+    "국밥",
+    "백반",
+    "비빔밥",
+    "찌개",
+    "전골",
+    "고기",
+    "갈비",
+    "삼겹",
+    "불고기",
+    "곱창",
+    "막창",
+    "치킨",
+    "찜닭",
+    "닭",
+    "분식",
+    "김밥",
+    "떡볶이",
+    "돈까스",
+    "초밥",
+    "스시",
+    "라멘",
+    "우동",
+    "중식",
+    "짜장",
+    "짬뽕",
+    "탕수육",
+    "양식",
+    "파스타",
+    "피자",
+]
+NICHE_GENERAL_MEAL_TERMS = [
+    "튀르키예",
+    "터키",
+    "인도",
+    "태국",
+    "멕시",
+    "아랍",
+    "중동",
+    "러시아",
+    "몽골",
+    "스페인",
+    "프랑스",
+]
 SPECIFIC_FOOD_SYNONYMS = {
     "초밥": ["초밥", "스시", "롤", "사시미", "참치"],
     "스시": ["스시", "초밥", "롤", "사시미", "참치"],
@@ -964,12 +1025,15 @@ def _extract_kakao_opening_status(payload: dict[str, Any]) -> dict[str, Any]:
         for part in [code or "", display_text or "", display_text_info or "", day_desc or "", today_hours or "", today_closed_text or ""]
         if part
     )
-    closed_terms = ["휴무", "영업 종료", "영업종료", "오늘 휴무", "정기휴무", "임시휴무", "닫음", "마감"]
+    closed_terms = ["휴무", "영업 종료", "영업종료", "오늘 휴무", "정기휴무", "임시휴무", "닫음", "폐업"]
     unavailable_terms = [*closed_terms, "브레이크", "준비중", "영업 전", "영업전"]
-    closed_codes = {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "TEMPORARILY_CLOSED"}
+    closed_codes = {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "DAY_OFF", "TEMPORARILY_CLOSED"}
     unavailable_codes = {*closed_codes, "BREAK_TIME", "BEFORE_OPEN"}
-    is_today_closed = any(term in combined for term in closed_terms) or bool(today_closed_text)
+    is_today_closed = bool(code in closed_codes or any(term in combined for term in closed_terms) or today_closed_text)
     is_currently_unavailable = bool(code in unavailable_codes or any(term in combined for term in unavailable_terms))
+    if code == "CLOSING_SOON":
+        is_today_closed = False
+        is_currently_unavailable = False
     if code == "OPEN" and not is_today_closed:
         is_currently_unavailable = False
 
@@ -1317,6 +1381,8 @@ def _expanded_kakao_terms(requested: str) -> list[str]:
 
 
 def _kakao_keyword_queries(requested: str, search_area: dict[str, Any]) -> list[str]:
+    if requested in GENERAL_MEAL_QUERY_TERMS:
+        return _area_qualified_kakao_queries(search_area, KAKAO_GENERAL_MEAL_KEYWORDS, max_queries=20)
     if requested == "술집":
         return _area_qualified_kakao_queries(search_area, KAKAO_BAR_KEYWORDS)
     if requested == "바":
@@ -1430,6 +1496,37 @@ def _score_public_restaurant(
         reasons.append("사용자 선호 음식 분류")
 
     blob = _text_blob(restaurant)
+    if _is_general_meal_policy(ranking_policy):
+        if any(term in blob for term in COMMON_GENERAL_MEAL_TERMS):
+            score += 10
+            reasons.append("일반 맛집 요청에 맞는 보편적 식사 업종")
+        if any(term in blob for term in NICHE_GENERAL_MEAL_TERMS):
+            score -= 16
+            reasons.append("일반 맛집 요청에서는 특색 음식 업종으로 후순위")
+        try:
+            popularity_reviews = int(restaurant["review_count"]) if restaurant.get("review_count") is not None else None
+        except (TypeError, ValueError):
+            popularity_reviews = None
+        popularity_rating = _float_or_none(restaurant.get("rating"))
+        if popularity_reviews is not None:
+            if popularity_reviews >= 300:
+                score += 12
+                reasons.append(f"일반 맛집 판단용 후기 규모 우수: {popularity_reviews}개")
+            elif popularity_reviews >= 100:
+                score += 8
+                reasons.append(f"일반 맛집 판단용 후기 규모 충분: {popularity_reviews}개")
+            elif popularity_reviews >= 50:
+                score += 5
+                reasons.append(f"일반 맛집 판단용 후기 규모 양호: {popularity_reviews}개")
+            elif popularity_reviews >= 20:
+                score += 2
+                reasons.append(f"일반 맛집 판단용 기본 후기 조건 충족: {popularity_reviews}개")
+            elif popularity_reviews < 10:
+                score -= 25
+                reasons.append(f"일반 맛집 판단에서는 후기 규모가 작아 후순위: {popularity_reviews}개")
+        if popularity_rating is not None and popularity_rating >= 4.3:
+            score += 5
+            reasons.append(f"일반 맛집 판단용 평점 우수: {popularity_rating}")
     purpose = str(ranking_policy.get("purpose", ""))
     if "친구" in purpose and any(keyword in blob for keyword in ["객사", "길", "회관", "관", "식당"]):
         score += 4
@@ -1555,6 +1652,8 @@ def _build_public_recommendation_reason(
             parts.append(f"요청한 '{requested_cuisine}' 의도와 장소 분류({category})가 맞습니다")
         else:
             parts.append(f"요청한 '{requested_cuisine}' 의도와는 일부 차이가 있어 보조 후보로만 평가했습니다")
+    elif _is_general_meal_policy(ranking_policy):
+        parts.append(f"{distance_reference} 인근 일반 맛집 후보로 위치, 식사 업종, 평점/후기 지표를 함께 확인했습니다")
     else:
         parts.append(f"전주시 {cuisine} 후보로 분류와 위치 정보를 확인했습니다")
 
