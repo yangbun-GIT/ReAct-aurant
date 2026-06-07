@@ -1,3 +1,7 @@
+# Runtime: Python 3.11+ (validated with Python 3.13)
+#
+# Direct dependencies used by the ReAct agent, MCP tools, API clients,
+# environment loading, and GPT integration.
 mcp==1.27.2
 pydantic==2.13.4
 python-dotenv==1.2.2
