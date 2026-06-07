@@ -84,8 +84,43 @@ KAKAO_CATEGORY_CUISINE_RULES = [
 DRINKING_PLACE_TERMS = ["술집", "혼술", "한잔", "술자리", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바", "칵테일", "비어", "beer"]
 TRADITIONAL_DRINKING_TERMS = ["막걸리", "전집", "파전", "해물파전"]
 BAR_ONLY_TERMS = ["와인바", "칵테일바", "바", "bar", "BAR", "펍"]
+NON_MEAL_ALCOHOL_PLACE_TERMS = [
+    "술집",
+    "주점",
+    "일본식주점",
+    "포장마차",
+    "포차",
+    "호프",
+    "펍",
+    "와인바",
+    "칵테일바",
+    "맥주",
+    "비어",
+    "이자카야",
+]
 BAKERY_TERMS = ["빵집", "베이커리", "제과", "제빵", "빵", "바게트", "크루아상", "소금빵", "케이크", "bakery", "BAKERY"]
 BAKERY_EXCLUDE_TERMS = ["설빙", "더리터", "메가커피", "컴포즈", "빽다방", "스타벅스", "투썸", "이디야", "공차", "요거프레소", "쥬씨"]
+NON_MEAL_LIGHT_PLACE_TERMS = [
+    "카페",
+    "커피",
+    "커피전문점",
+    "디저트",
+    "디저트카페",
+    "베이커리",
+    "제과",
+    "제빵",
+    "빵집",
+    "빙수",
+    "아이스크림",
+    "투썸",
+    "스타벅스",
+    "이디야",
+    "공차",
+    "더리터",
+    "메가커피",
+    "컴포즈",
+    "빽다방",
+]
 STRICT_FOOD_QUERIES = {"술집", "바", "혼술", "한잔", "술자리", "막걸리", "전집", "파전", "해물파전", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일", "칵테일바", "빵집", "베이커리", "빵", "카페", "디저트카페", "디저트 카페"}
 KAKAO_BAR_KEYWORDS = ["술집", "포차", "호프", "펍", "이자카야", "맥주", "소주", "와인바", "칵테일바"]
 KAKAO_BAR_ONLY_KEYWORDS = ["와인바", "칵테일바", "바", "펍"]
@@ -1116,6 +1151,77 @@ def _has_traditional_drinking_signal(blob: str) -> bool:
     return any(term in blob for term in TRADITIONAL_DRINKING_TERMS)
 
 
+def _has_non_meal_alcohol_place_signal(blob: str) -> bool:
+    if _has_strict_bar_signal(blob):
+        return True
+    if any(term in blob for term in NON_MEAL_ALCOHOL_PLACE_TERMS):
+        return True
+    # Exclude true pub/bar categories, but do not treat branch names like "전주점" as 주점.
+    return bool(re.search(r"(?<!전)주점", blob))
+
+
+def _request_allows_drinking_place(cuisine: str | None = None, keyword: str | None = None) -> bool:
+    requested = " ".join(str(value or "") for value in [cuisine, keyword]).strip()
+    if not requested:
+        return False
+    if _has_non_meal_alcohol_place_signal(requested):
+        return True
+    return any(term in requested for term in TRADITIONAL_DRINKING_TERMS)
+
+
+def _request_allows_light_place(cuisine: str | None = None, keyword: str | None = None) -> bool:
+    requested = " ".join(str(value or "") for value in [cuisine, keyword]).strip()
+    if not requested:
+        return False
+    expanded_terms = _food_query_terms(requested)
+    if any(term in NON_MEAL_LIGHT_PLACE_TERMS for term in expanded_terms):
+        return True
+    return any(term in requested for term in NON_MEAL_LIGHT_PLACE_TERMS)
+
+
+def _is_non_meal_alcohol_place(restaurant: dict[str, Any]) -> bool:
+    cuisine = str(restaurant.get("cuisine") or "")
+    blob = " ".join(
+        str(value or "")
+        for value in [
+            restaurant.get("name"),
+            cuisine,
+            restaurant.get("overview"),
+            " ".join(str(value) for value in (restaurant.get("category_codes") or {}).values() if value),
+        ]
+    )
+    return _has_non_meal_alcohol_place_signal(blob)
+
+
+def _is_non_meal_light_place(restaurant: dict[str, Any]) -> bool:
+    blob = " ".join(
+        str(value or "")
+        for value in [
+            restaurant.get("name"),
+            restaurant.get("cuisine"),
+            restaurant.get("overview"),
+            " ".join(str(value) for value in (restaurant.get("category_codes") or {}).values() if value),
+        ]
+    )
+    return any(term in blob for term in NON_MEAL_LIGHT_PLACE_TERMS)
+
+
+def _is_non_meal_place_for_general_request(restaurant: dict[str, Any]) -> bool:
+    return _is_non_meal_alcohol_place(restaurant) or _is_non_meal_light_place(restaurant)
+
+
+def _is_general_meal_policy(ranking_policy: dict[str, Any]) -> bool:
+    cuisine = ranking_policy.get("cuisine")
+    purpose = str(ranking_policy.get("purpose") or "")
+    if _request_allows_drinking_place(str(cuisine) if cuisine else None):
+        return False
+    if _request_allows_light_place(str(cuisine) if cuisine else None):
+        return False
+    if any(term in purpose for term in ["혼술", "술자리", "한잔"]):
+        return False
+    return True
+
+
 def _has_bakery_signal(blob: str) -> bool:
     if any(term in blob for term in BAKERY_EXCLUDE_TERMS):
         return False
@@ -1731,6 +1837,10 @@ def search_kakao_local_places(
             for place in places
             if place.get("distance_m") is None or int(place["distance_m"]) <= int(max_distance_m)
         ]
+    if not _request_allows_drinking_place(cuisine, keyword):
+        places = [place for place in places if not _is_non_meal_alcohol_place(place)]
+    if not _request_allows_light_place(cuisine, keyword):
+        places = [place for place in places if not _is_non_meal_light_place(place)]
     if cuisine in {"술집", "바", "빵집", "베이커리", "빵", "디저트카페", "디저트 카페", "막걸리", "전집", "파전", "해물파전", *KAKAO_MEAT_QUERY_TERMS}:
         places = [place for place in places if _matches_food_query(place, cuisine)]
 
@@ -1982,6 +2092,8 @@ def rank_tourapi_restaurants(
     source_name = "Kakao Local API" if "Kakao Local API" in source_names else "TourAPI KorService2"
 
     for candidate in candidates:
+        if _is_general_meal_policy(policy) and _is_non_meal_place_for_general_request(candidate):
+            continue
         score, reasons = _score_public_restaurant(candidate, policy)
         ranked = candidate.copy()
         ranked["score"] = score

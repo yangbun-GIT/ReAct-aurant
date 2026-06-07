@@ -791,6 +791,124 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["candidates"][0]["name"], "두번째페이지맛집")
 
+    def test_general_matjip_kakao_search_excludes_bar_candidates(self) -> None:
+        kakao_payload = {
+            "documents": [
+                {
+                    "id": "bar-1",
+                    "place_name": "아람",
+                    "category_name": "음식점 > 술집 > 바",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "road_address_name": "전북특별자치도 전주시 덕진구 권삼득로 309-1",
+                    "x": "127.129",
+                    "y": "35.846",
+                    "distance": "304",
+                    "place_url": "http://place.map.kakao.com/bar-1",
+                },
+                {
+                    "id": "cafe-1",
+                    "place_name": "투썸플레이스 전주전북대점",
+                    "category_name": "음식점 > 카페 > 커피전문점",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "road_address_name": "전북특별자치도 전주시 덕진구 권삼득로 307",
+                    "x": "127.1285",
+                    "y": "35.8455",
+                    "distance": "289",
+                    "place_url": "http://place.map.kakao.com/cafe-1",
+                },
+                {
+                    "id": "meal-1",
+                    "place_name": "전북대밥집",
+                    "category_name": "음식점 > 한식",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "road_address_name": "전북특별자치도 전주시 덕진구 명륜길 10",
+                    "x": "127.128",
+                    "y": "35.845",
+                    "distance": "330",
+                    "place_url": "http://place.map.kakao.com/meal-1",
+                },
+            ],
+            "meta": {"is_end": True},
+        }
+
+        with patch("public_data_server._kakao_request", return_value={"status": "ok", "payload": kakao_payload}):
+            result = search_kakao_local_places(
+                area="전주 전북대",
+                cuisine=None,
+                min_rating=4.0,
+                min_review_count=20,
+                max_distance_m=1200,
+                limit=30,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([candidate["name"] for candidate in result["candidates"]], ["전북대밥집"])
+
+    def test_explicit_bar_kakao_search_keeps_bar_candidates(self) -> None:
+        kakao_payload = {
+            "documents": [
+                {
+                    "id": "bar-1",
+                    "place_name": "아람",
+                    "category_name": "음식점 > 술집 > 바",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "road_address_name": "전북특별자치도 전주시 덕진구 권삼득로 309-1",
+                    "x": "127.129",
+                    "y": "35.846",
+                    "distance": "304",
+                    "place_url": "http://place.map.kakao.com/bar-1",
+                }
+            ],
+            "meta": {"is_end": True},
+        }
+
+        with patch("public_data_server._kakao_request", return_value={"status": "ok", "payload": kakao_payload}):
+            result = search_kakao_local_places(
+                area="전주 전북대",
+                cuisine="바",
+                min_rating=4.0,
+                min_review_count=20,
+                max_distance_m=1200,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidates"][0]["name"], "아람")
+
+    def test_explicit_cafe_kakao_search_keeps_cafe_candidates(self) -> None:
+        kakao_payload = {
+            "documents": [
+                {
+                    "id": "cafe-1",
+                    "place_name": "투썸플레이스 전주전북대점",
+                    "category_name": "음식점 > 카페 > 커피전문점",
+                    "category_group_code": "FD6",
+                    "category_group_name": "음식점",
+                    "road_address_name": "전북특별자치도 전주시 덕진구 권삼득로 307",
+                    "x": "127.1285",
+                    "y": "35.8455",
+                    "distance": "289",
+                    "place_url": "http://place.map.kakao.com/cafe-1",
+                }
+            ],
+            "meta": {"is_end": True},
+        }
+
+        with patch("public_data_server._kakao_request", return_value={"status": "ok", "payload": kakao_payload}):
+            result = search_kakao_local_places(
+                area="전주 전북대",
+                cuisine="카페",
+                min_rating=4.0,
+                min_review_count=20,
+                max_distance_m=1200,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidates"][0]["name"], "투썸플레이스 전주전북대점")
+
     def test_kakao_registered_food_keywords_use_area_qualified_expansion(self) -> None:
         captured_queries: list[str] = []
 
@@ -888,6 +1006,61 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertFalse(_public_candidate_matches_cuisine(candidate, "초밥"))
+
+    def test_general_meal_ranking_drops_alcohol_place_candidates(self) -> None:
+        result = rank_tourapi_restaurants(
+            candidates=[
+                {
+                    "name": "아람",
+                    "source": "Kakao Local API",
+                    "cuisine": "바",
+                    "address": "전북특별자치도 전주시 덕진구 권삼득로 309-1",
+                    "overview": "Kakao Local category: 음식점 > 술집 > 바",
+                    "category_codes": {"cat3": "음식점 > 술집 > 바"},
+                    "distance_m": 304,
+                    "distance_reference": "전북대",
+                    "rating": 4.5,
+                    "review_count": 31,
+                    "operation": {},
+                },
+                {
+                    "name": "투썸플레이스 전주전북대점",
+                    "source": "Kakao Local API",
+                    "cuisine": "커피전문점",
+                    "address": "전북특별자치도 전주시 덕진구 권삼득로 307",
+                    "overview": "Kakao Local category: 음식점 > 카페 > 커피전문점",
+                    "category_codes": {"cat3": "음식점 > 카페 > 커피전문점"},
+                    "distance_m": 289,
+                    "distance_reference": "전북대",
+                    "rating": 4.8,
+                    "review_count": 90,
+                    "operation": {},
+                },
+                {
+                    "name": "전북대밥집",
+                    "source": "Kakao Local API",
+                    "cuisine": "한식",
+                    "address": "전북특별자치도 전주시 덕진구 명륜길 10",
+                    "overview": "Kakao Local category: 음식점 > 한식",
+                    "category_codes": {"cat3": "음식점 > 한식"},
+                    "distance_m": 330,
+                    "distance_reference": "전북대",
+                    "rating": 4.1,
+                    "review_count": 22,
+                    "operation": {},
+                },
+            ],
+            ranking_policy={
+                "purpose": "일반 식사",
+                "cuisine": None,
+                "min_rating": 4.0,
+                "min_review_count": 20,
+                "max_distance_m": 1200,
+            },
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([candidate["name"] for candidate in result["ranked_candidates"]], ["전북대밥집"])
 
     def test_public_candidate_match_does_not_treat_parking_text_as_cafe(self) -> None:
         candidate = {
