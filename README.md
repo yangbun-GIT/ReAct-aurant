@@ -11,6 +11,7 @@ flowchart LR
     W --> A["ReAct Agent Client"]
     C --> A
     A --> P["Plan and Parse"]
+    P --> Z["Jeonju Gazetteer<br/>local area aliases"]
     P --> T["MCP Tool Use"]
     T --> E["Env Context Server<br/>Weather, Memory"]
     T --> G["Gourmet DB Server<br/>Ranking, Detail"]
@@ -28,7 +29,7 @@ flowchart LR
 | 장소/API 도구 | `public_data_server.py` | Kakao Local API, TourAPI, 장소 링크 지표 보강 |
 | 랭킹 도구 | `gourmet_db_server.py` | 후보 검색, 상세 조회, 점수화 |
 | 환경 도구 | `env_context_server.py` | 날씨, 사용자 선호, 메모리 |
-| 지역 사전 | `jeonju_gazetteer.py` | 전주시 세부 지역과 로컬 별칭 인식 |
+| 지역 사전 | `jeonju_gazetteer.py` | 전주시 세부 지역, 로컬 별칭, 상권 기준 반경 인식 |
 | 테스트 | `tests/` | 핵심 로직, Agentic Pattern, 웹 대시보드 검증 |
 
 ## 실행 준비
@@ -82,6 +83,8 @@ docker compose down
 ```
 
 웹 실행 기록은 `logs/web_runs`에 저장됩니다. 이 경로는 Git 추적에서 제외됩니다.
+
+추천 결과의 `적용 조건`에는 지역, 음식 종류, 거리와 함께 `검색범위`가 표시됩니다. 예를 들어 `전북대 근처`는 전북대 캠퍼스 주변 상권으로 넓게 보고 구정문·신정문 권역을 포함하며, `전북대 구정문 근처`는 구정문 중심 상권으로 좁게 처리합니다.
 
 ## 환경 변수
 

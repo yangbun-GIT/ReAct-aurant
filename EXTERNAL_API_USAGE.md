@@ -38,6 +38,7 @@ KAKAO_REST_API_KEY=발급받은_REST_API_KEY
 
 - Kakao Local API 검색에는 REST API Key만 필요합니다.
 - Kakao 로그인, Client Secret, 비즈니스 인증은 이 프로젝트의 Local API 검색에는 필요하지 않습니다.
+- Kakao Local API는 특정 좌표와 반경을 기준으로 장소를 검색합니다. 객사, 객리단길, 전북대, 구정문, 신정문처럼 전주에서 로컬 상권명으로 쓰이는 지역은 `jeonju_gazetteer.py`의 기준 좌표와 반경을 먼저 사용하고, 사전에 없는 장소명만 Kakao 위치 검색으로 보정합니다.
 - Kakao Local API 공식 응답에는 평점, 후기 수, 가격대 필드가 없습니다.
 - 프로젝트는 Kakao 장소 링크/패널에서 관측 가능한 평점과 후기 수를 보강합니다.
 - 관측되지 않은 값은 임의 생성하지 않고 데이터 한계로 표시합니다.
