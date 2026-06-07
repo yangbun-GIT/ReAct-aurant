@@ -31,6 +31,36 @@ flowchart LR
 | 지역 사전 | `jeonju_gazetteer.py` | 전주시 세부 지역과 로컬 별칭 인식 |
 | 테스트 | `tests/` | 핵심 로직, Agentic Pattern, 웹 대시보드 검증 |
 
+## 실행 준비
+
+Docker 웹 실행을 우선 권장하지만, 내부 Agent와 MCP 도구는 Python 런타임에서 동작합니다. 로컬에서 직접 실행하거나 테스트할 경우 아래 항목이 필요합니다.
+
+| 항목 | 내용 |
+| --- | --- |
+| Python | 3.11 이상, 검증 환경은 Python 3.13 |
+| Docker | 웹 대시보드 실행 시 사용 |
+| Python 패키지 | `requirements.txt` 기준 설치 |
+| 환경 변수 파일 | `.env.example`을 복사해 `.env`로 사용 |
+
+필수 Python 패키지:
+
+| 패키지 | 역할 |
+| --- | --- |
+| `mcp` | MCP 서버/클라이언트 실행 |
+| `pydantic` | Agent 요청/응답 모델 검증 |
+| `python-dotenv` | 로컬 `.env` 로드 |
+| `httpx` | Kakao Local API, TourAPI HTTP 호출 |
+| `openai` | GPT 기반 판단, Reflection, 최종 답변 생성 |
+
+Python 환경을 직접 준비할 때는 다음 순서로 설치합니다.
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
 ## Docker 웹 실행
 
 웹 대시보드 실행을 우선 권장합니다. 입력, 최종 추천, 자연어 Trace, 코드 흐름 Trace, 실행 로그, JSONL Trace를 한 화면에서 확인할 수 있습니다.
@@ -70,13 +100,6 @@ TOUR_API_SERVICE_KEY=
 ## CLI 실행
 
 CLI는 웹 대시보드 없이 Agent 흐름과 Trace를 확인할 때 사용합니다.
-
-```powershell
-py -3.13 -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
 
 Kakao Local API 기반 실행:
 
