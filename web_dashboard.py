@@ -24,7 +24,7 @@ RUNS_ROOT = ROOT / "logs" / "web_runs"
 SESSION_COOKIE = "reactaurant_admin_session"
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 DEFAULT_QUERY = "전주 객사 근처에서 친구랑 저녁 먹기 좋은 맛집을 찾아줘. 너무 비싸지 않고, 리뷰가 좋은 곳 위주로 3곳 추천해줘."
-VALID_DATA_SOURCES = {"kakao", "free"}
+VALID_DATA_SOURCES = {"kakao", "tourapi"}
 VALID_LLM_MODES = {"auto", "use", "no"}
 
 
@@ -204,7 +204,7 @@ def infer_effective_data_source(data_source: str, events: list[dict[str, Any]], 
         effective = "local sample"
     elif data_source == "kakao":
         effective = "Kakao Local"
-    elif data_source == "free":
+    elif data_source == "tourapi":
         effective = "TourAPI/local sample"
     else:
         effective = "not resolved"
@@ -1101,8 +1101,8 @@ def render_dashboard() -> str:
             <div class="field">
               <label for="dataSource">데이터 소스</label>
               <select id="dataSource" name="dataSource">
-                <option value="kakao">Kakao API + GPT</option>
-                <option value="free">무료 모드 (TourAPI + 로컬)</option>
+                <option value="kakao">Kakao API</option>
+                <option value="tourapi">TourAPI</option>
               </select>
             </div>
             <div class="field">
@@ -1113,15 +1113,6 @@ def render_dashboard() -> str:
                 <option value="no">no</option>
               </select>
             </div>
-          </div>
-          <div class="toggle-field">
-            <label class="toggle-label">
-              <input type="checkbox" checked disabled>
-              <span>
-                Kakao 장소 링크 지표 기본 반영
-                <span class="toggle-help">카카오 모드에서는 장소 패널과 페이지에서 평점·후기 수·가격대 추출을 기본 시도하고, 관측되지 않은 값은 생성하지 않습니다.</span>
-              </span>
-            </label>
           </div>
           <button id="runBtn" type="submit">실행</button>
         </form>

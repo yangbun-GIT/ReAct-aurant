@@ -1,16 +1,16 @@
 # 4단계 예외 처리 실행 로그
 
-이 문서는 `에러 대응 및 예외 처리` 단계 검증용 실행 로그입니다. 모든 명령은 비용이 들지 않도록 `--no-llm --data-source local`로 실행했습니다.
+이 문서는 `에러 대응 및 예외 처리` 단계 검증용 실행 로그입니다. 모든 명령은 비용이 들지 않도록 `--no-llm --data-source tourapi`로 실행했습니다.
 
 ## 검증 명령
 
 ```powershell
-.\.venv\Scripts\python react_client.py "파이썬 코드 알려줘" --no-llm --data-source local --trace logs\stage4_unrelated_trace.jsonl
-.\.venv\Scripts\python react_client.py "추천해줘" --no-llm --data-source local --trace logs\stage4_insufficient_trace.jsonl
-.\.venv\Scripts\python react_client.py "전주 객사 우주젤리 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_no_results_trace.jsonl
-.\.venv\Scripts\python react_client.py "부산 서면 근처에서 친구랑 저녁 먹기 좋은 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_unsupported_region_trace.jsonl
-.\.venv\Scripts\python react_client.py "전주 객사 성적인 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_safety_trace.jsonl
-.\.venv\Scripts\python react_client.py "전주 객사에서 살인적인 매운 맛집 추천해줘" --no-llm --data-source local --trace logs\stage4_contextual_safety_trace.jsonl
+.\.venv\Scripts\python react_client.py "파이썬 코드 알려줘" --no-llm --data-source tourapi --trace logs\stage4_unrelated_trace.jsonl
+.\.venv\Scripts\python react_client.py "추천해줘" --no-llm --data-source tourapi --trace logs\stage4_insufficient_trace.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 우주젤리 맛집 추천해줘" --no-llm --data-source tourapi --trace logs\stage4_no_results_trace.jsonl
+.\.venv\Scripts\python react_client.py "부산 서면 근처에서 친구랑 저녁 먹기 좋은 맛집 추천해줘" --no-llm --data-source tourapi --trace logs\stage4_unsupported_region_trace.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사 성적인 맛집 추천해줘" --no-llm --data-source tourapi --trace logs\stage4_safety_trace.jsonl
+.\.venv\Scripts\python react_client.py "전주 객사에서 살인적인 매운 맛집 추천해줘" --no-llm --data-source tourapi --trace logs\stage4_contextual_safety_trace.jsonl
 ```
 
 ## 예외 처리 결과

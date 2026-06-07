@@ -1887,7 +1887,7 @@ async def run_agent(
     query: str,
     trace_path: Path | None,
     use_llm: bool,
-    data_source: Literal["kakao", "free"] = "kakao",
+    data_source: Literal["kakao", "tourapi"] = "kakao",
     enrich_kakao_place_metrics: bool = True,
 ) -> str:
     load_dotenv()
@@ -1950,7 +1950,7 @@ async def run_agent(
             )
         )
         gourmet_read = gourmet_write = None
-        if data_source == "free":
+        if data_source == "tourapi":
             gourmet_read, gourmet_write = await stack.enter_async_context(
                 stdio_client(
                     StdioServerParameters(command=sys.executable, args=["gourmet_db_server.py"], env=env),
@@ -1958,7 +1958,7 @@ async def run_agent(
                 )
             )
         public_read = public_write = None
-        if data_source in {"free", "kakao"}:
+        if data_source in {"tourapi", "kakao"}:
             public_read, public_write = await stack.enter_async_context(
                 stdio_client(
                     StdioServerParameters(command=sys.executable, args=["public_data_server.py"], env=env),
@@ -2024,11 +2024,11 @@ async def run_agent(
                     "reason": (
                         "Kakao Local API와 Kakao 장소 링크 지표를 기준으로 후보 검색과 랭킹을 수행합니다."
                         if data_source == "kakao"
-                        else "무료 모드로 TourAPI 공공데이터 후보를 검색하고, 부족하면 로컬 샘플 데이터셋으로 대체합니다."
+                        else "TourAPI 공공데이터 후보를 검색하고, 부족하면 로컬 샘플 데이터셋으로 대체합니다."
                     ),
                 }
             )
-        if data_source == "free" and gourmet_client is not None:
+        if data_source == "tourapi" and gourmet_client is not None:
             selected_tools.append(
                 {
                     "server": "gourmet_db_server.py",
@@ -2273,7 +2273,7 @@ async def run_agent(
                     "severity": "warning",
                     "message": "요청한 음식 종류와 정확히 일치하는 공공데이터 후보가 부족합니다.",
                     "recovery": (
-                        "무료 모드에서는 Kakao API를 호출하지 않으므로 TourAPI 후보는 넓게 수집하되 최종 추천에서 요청 업종 의도를 엄격히 유지합니다."
+                        "TourAPI 모드에서는 Kakao API를 호출하지 않으므로 TourAPI 후보는 넓게 수집하되 최종 추천에서 요청 업종 의도를 엄격히 유지합니다."
                         if strict_food_requested
                         else "음식 종류 필터를 완화하고 전주 음식점 후보 전체를 거리와 상세정보 기준으로 다시 비교합니다."
                     ),
@@ -2687,9 +2687,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trace", default="logs/trace_jeonju.jsonl", help="Trace JSONL 저장 경로")
     parser.add_argument(
         "--data-source",
-        choices=["kakao", "free"],
+        choices=["kakao", "tourapi"],
         default="kakao",
-        help="맛집 후보 데이터 소스입니다. kakao는 Kakao Local API+GPT, free는 TourAPI+로컬 샘플만 사용합니다.",
+        help="맛집 후보 데이터 소스입니다. kakao는 Kakao Local API, tourapi는 한국관광공사 TourAPI를 사용합니다.",
     )
     parser.add_argument("--use-llm", action="store_true", help="GPT Agent 모드를 명시적으로 사용합니다. 기본값은 OPENAI_API_KEY가 있으면 자동 사용입니다.")
     parser.add_argument("--no-llm", action="store_true", help="GPT Agent 모드를 끄고 규칙 기반 fallback으로 실행합니다.")
