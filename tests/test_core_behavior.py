@@ -958,6 +958,58 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertEqual(result["condition_checks"]["review_count"], False)
         self.assertEqual(result["condition_checks"]["price_level"], True)
 
+    def test_extract_kakao_place_metrics_uses_panel_open_hours_for_closed_status(self) -> None:
+        class FakePanelResponse:
+            status_code = 200
+            text = "{}"
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, object]:
+                return {
+                    "summary": {
+                        "name": "Closed Today",
+                        "category": {"name": "Korean restaurant"},
+                    },
+                    "kakaomap_review": {
+                        "score_set": {
+                            "average_score": 4.8,
+                            "review_count": 120,
+                        }
+                    },
+                    "open_hours": {
+                        "headline": {"code": "CLOSED", "display_text": "오늘 휴무", "display_text_info": ""},
+                        "week_from_today": {
+                            "week_periods": [
+                                {
+                                    "days": [
+                                        {
+                                            "is_highlight": True,
+                                            "day_of_the_week_desc": "일(6/7)",
+                                            "off_days": {"holiday_desc": "정기휴무"},
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                    },
+                }
+
+        with patch("public_data_server.httpx.get", return_value=FakePanelResponse()):
+            result = extract_kakao_place_metrics(
+                place_url="https://place.map.kakao.com/999",
+                place_name="Closed Today",
+                min_rating=4.0,
+                min_review_count=20,
+            )
+
+        self.assertEqual(result["source"], "Kakao place panel API")
+        self.assertTrue(result["business_status_observed"])
+        self.assertTrue(result["is_today_closed"])
+        self.assertTrue(result["is_currently_unavailable"])
+        self.assertEqual(result["opening_status"]["today_closed_text"], "정기휴무")
+
     def test_kakao_metric_judgment_rejects_failed_metrics_for_any_food_type(self) -> None:
         for cuisine in ["일본식라면", "술집", "빵집", "디저트카페", "한식"]:
             parsed = ParsedRequest(
@@ -1289,6 +1341,90 @@ class PublicReflectionTests(unittest.TestCase):
 
 
 class KakaoMetricEnrichmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_metric_judgment_rejects_closed_place_even_with_good_metrics(self) -> None:
+        parsed = ParsedRequest(
+            location="?꾩＜ 媛앹궗",
+            cuisine="怨좉린吏?",
+            min_rating=4.0,
+            min_review_count=20,
+        )
+
+        judgment = _observed_metric_judgment(
+            {
+                "place_url": "https://place.map.kakao.com/closed",
+                "place_name": "Closed Meat",
+                "metrics_status": "observed",
+                "rating": 4.8,
+                "review_count": 120,
+                "condition_checks": {"rating": True, "review_count": True, "price_level": None},
+                "business_status_observed": True,
+                "opening_status": {"display_text": "오늘 휴무", "today_closed_text": "정기휴무"},
+                "is_today_closed": True,
+                "is_currently_unavailable": True,
+            },
+            parsed,
+        )
+
+        self.assertEqual(judgment["status"], "observed")
+        self.assertFalse(judgment["meets_conditions"])
+        self.assertIn("unavailable today", judgment["reason"])
+
+    async def test_enrichment_excludes_closed_kakao_place(self) -> None:
+        parsed = ParsedRequest(
+            location="?꾩＜ 媛앹궗",
+            cuisine="怨좉린吏?",
+            min_rating=4.0,
+            min_review_count=20,
+            max_price_level=None,
+        )
+        candidates = [
+            {
+                "restaurant_id": "kakao:closed",
+                "name": "Closed Meat",
+                "place_url": "https://place.map.kakao.com/closed",
+                "score_reasons": [],
+            }
+        ]
+
+        class FakeClient:
+            async def call_tool(self, action):
+                class Result:
+                    summary = "closed metrics observed"
+                    data = {
+                        "status": "ok",
+                        "place_url": "https://place.map.kakao.com/closed",
+                        "place_name": "Closed Meat",
+                        "metrics_status": "observed",
+                        "rating": 4.8,
+                        "review_count": 120,
+                        "price_level": None,
+                        "condition_checks": {"rating": True, "review_count": True, "price_level": None},
+                        "business_status_observed": True,
+                        "opening_status": {"display_text": "오늘 휴무", "today_closed_text": "정기휴무"},
+                        "is_today_closed": True,
+                        "is_currently_unavailable": True,
+                    }
+
+                return Result()
+
+        class DummyTrace:
+            def write(self, **kwargs):
+                return None
+
+        enriched, reflection = await enrich_kakao_candidates_with_place_metrics(
+            candidates=candidates,
+            parsed=parsed,
+            public_client=FakeClient(),
+            trace=DummyTrace(),
+            messages=[],
+            use_llm=False,
+            enabled=True,
+        )
+
+        self.assertEqual(enriched, [])
+        self.assertIn("Closed Meat", reflection)
+        self.assertIn("unavailable today", reflection)
+
     async def test_llm_metric_judgment_cannot_override_observed_failed_metrics(self) -> None:
         parsed = ParsedRequest(
             location="전주 객사",

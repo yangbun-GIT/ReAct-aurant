@@ -881,6 +881,74 @@ def _condition_checks(
     }
 
 
+def _extract_highlighted_open_day(open_hours: dict[str, Any]) -> dict[str, Any] | None:
+    week_periods = _nested_get(open_hours, ["week_from_today", "week_periods"])
+    if not isinstance(week_periods, list):
+        return None
+    first_day: dict[str, Any] | None = None
+    for period in week_periods:
+        days = period.get("days") if isinstance(period, dict) else None
+        if not isinstance(days, list):
+            continue
+        for day in days:
+            if not isinstance(day, dict):
+                continue
+            if first_day is None:
+                first_day = day
+            if day.get("is_highlight") is True:
+                return day
+    return first_day
+
+
+def _extract_kakao_opening_status(payload: dict[str, Any]) -> dict[str, Any]:
+    open_hours = payload.get("open_hours")
+    if not isinstance(open_hours, dict):
+        return {
+            "business_status_observed": False,
+            "is_currently_unavailable": None,
+            "is_today_closed": None,
+        }
+
+    headline = open_hours.get("headline") if isinstance(open_hours.get("headline"), dict) else {}
+    code = str(headline.get("code") or "").strip().upper() or None
+    display_text = _first_text(headline.get("display_text"))
+    display_text_info = _first_text(headline.get("display_text_info"))
+    highlighted_day = _extract_highlighted_open_day(open_hours)
+    day_desc = _first_text((highlighted_day or {}).get("day_of_the_week_desc")) if highlighted_day else None
+    on_days = (highlighted_day or {}).get("on_days") if highlighted_day else None
+    off_days = (highlighted_day or {}).get("off_days") if highlighted_day else None
+    today_hours = _first_text((on_days or {}).get("start_end_time_desc")) if isinstance(on_days, dict) else None
+    today_closed_text = _first_text((off_days or {}).get("holiday_desc")) if isinstance(off_days, dict) else None
+
+    combined = " ".join(
+        part
+        for part in [code or "", display_text or "", display_text_info or "", day_desc or "", today_hours or "", today_closed_text or ""]
+        if part
+    )
+    closed_terms = ["휴무", "영업 종료", "영업종료", "오늘 휴무", "정기휴무", "임시휴무", "닫음", "마감"]
+    unavailable_terms = [*closed_terms, "브레이크", "준비중", "영업 전", "영업전"]
+    closed_codes = {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "TEMPORARILY_CLOSED"}
+    unavailable_codes = {*closed_codes, "BREAK_TIME", "BEFORE_OPEN"}
+    is_today_closed = any(term in combined for term in closed_terms) or bool(today_closed_text)
+    is_currently_unavailable = bool(code in unavailable_codes or any(term in combined for term in unavailable_terms))
+    if code == "OPEN" and not is_today_closed:
+        is_currently_unavailable = False
+
+    return {
+        "business_status_observed": True,
+        "opening_status": {
+            "code": code,
+            "display_text": display_text,
+            "display_text_info": display_text_info,
+            "today": day_desc,
+            "today_hours": today_hours,
+            "today_closed_text": today_closed_text,
+        },
+        "is_currently_unavailable": is_currently_unavailable,
+        "is_today_closed": is_today_closed,
+    }
+
+
 def _extract_kakao_panel_metrics(
     *,
     secure_url: str,
@@ -926,6 +994,7 @@ def _extract_kakao_panel_metrics(
     effective_name = _nested_get(payload, ["summary", "name"]) or place_name
     category = _nested_get(payload, ["summary", "category", "name"])
     menu_price_summary = _menu_price_summary(menu_items)
+    opening_status = _extract_kakao_opening_status(payload)
     evidence_parts = [
         f"place_id={place_id}",
         f"name={effective_name}",
@@ -935,6 +1004,22 @@ def _extract_kakao_panel_metrics(
         f"blog_review_count={blog_review_count}",
         f"price_level={price_level}",
     ]
+    opening = opening_status.get("opening_status") or {}
+    if opening_status.get("business_status_observed"):
+        evidence_parts.append(
+            "business_status="
+            + ", ".join(
+                part
+                for part in [
+                    str(opening.get("code") or ""),
+                    str(opening.get("display_text") or ""),
+                    str(opening.get("display_text_info") or ""),
+                    str(opening.get("today") or ""),
+                    str(opening.get("today_hours") or opening.get("today_closed_text") or ""),
+                ]
+                if part
+            )
+        )
     if menu_price_summary:
         evidence_parts.append(menu_price_summary)
     evidence_text = "; ".join(part for part in evidence_parts if part is not None)
@@ -952,6 +1037,7 @@ def _extract_kakao_panel_metrics(
         "review_count": review_count,
         "blog_review_count": blog_review_count,
         "price_level": price_level,
+        **opening_status,
         "condition_checks": _condition_checks(
             rating=rating,
             review_count=review_count,
@@ -1173,6 +1259,12 @@ def _score_public_restaurant(
         if metadata_score:
             score += min(10, metadata_score * 2)
             reasons.append(f"공식 메타데이터 검증 {metadata_score}점: {', '.join(metadata_checks[:4])}")
+
+    if restaurant.get("source") == "Kakao Local API" and (
+        restaurant.get("is_currently_unavailable") is True or restaurant.get("is_today_closed") is True
+    ):
+        score -= 200
+        reasons.append("Kakao place status unavailable today")
 
     desired_cuisine = ranking_policy.get("cuisine")
     strict_food_requested = bool(desired_cuisine and str(desired_cuisine) in STRICT_FOOD_QUERIES)
@@ -1678,7 +1770,11 @@ def extract_kakao_place_metrics(
             min_review_count=min_review_count,
             max_price_level=max_price_level,
         )
-        if panel_metrics and panel_metrics.get("metrics_status") == "observed":
+        if panel_metrics and (
+            panel_metrics.get("metrics_status") == "observed"
+            or panel_metrics.get("is_currently_unavailable") is True
+            or panel_metrics.get("is_today_closed") is True
+        ):
             return panel_metrics
     except Exception:
         panel_metrics = None
@@ -1711,6 +1807,14 @@ def extract_kakao_place_metrics(
     review_count = _parse_review_count_from_text(evidence_text)
     price_level = _parse_price_level_from_text(evidence_text)
     observed = any(value is not None for value in [rating, review_count, price_level])
+    opening_status = {}
+    if panel_metrics and panel_metrics.get("business_status_observed"):
+        opening_status = {
+            "business_status_observed": panel_metrics.get("business_status_observed"),
+            "opening_status": panel_metrics.get("opening_status"),
+            "is_currently_unavailable": panel_metrics.get("is_currently_unavailable"),
+            "is_today_closed": panel_metrics.get("is_today_closed"),
+        }
 
     deterministic_meets = _condition_checks(
         rating=rating,
@@ -1731,6 +1835,7 @@ def extract_kakao_place_metrics(
         "rating": rating,
         "review_count": review_count,
         "price_level": price_level,
+        **opening_status,
         "condition_checks": deterministic_meets,
         "evidence_text": evidence_text,
         "evidence_snippets": snippets,

@@ -1578,12 +1578,41 @@ async def append_llm_fallback_recommendation(
         return answer
 
 
+def _opening_unavailable_reason(observation: dict[str, Any]) -> str | None:
+    opening = observation.get("opening_status") if isinstance(observation.get("opening_status"), dict) else {}
+    code = str(opening.get("code") or "").strip().upper()
+    status_text_source = " ".join(
+        str(opening.get(key) or "")
+        for key in ["display_text", "display_text_info", "today", "today_hours", "today_closed_text"]
+    )
+    closed_codes = {"CLOSED", "CLOSE", "HOLIDAY", "OFF", "TEMPORARILY_CLOSED"}
+    closed_terms = ["휴무", "영업 종료", "영업종료", "정기휴무", "임시휴무", "폐업", "닫음", "마감"]
+    closed_for_day = (
+        observation.get("is_today_closed") is True
+        or code in closed_codes
+        or any(term in status_text_source for term in closed_terms)
+    )
+    if closed_for_day:
+        status_parts = [
+            str(opening.get("display_text") or "").strip(),
+            str(opening.get("display_text_info") or "").strip(),
+            str(opening.get("today") or "").strip(),
+            str(opening.get("today_hours") or opening.get("today_closed_text") or "").strip(),
+        ]
+        status_text = ", ".join(part for part in status_parts if part)
+        return f"Kakao place business status unavailable today: {status_text or 'closed/unavailable'}"
+    return None
+
+
 def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest) -> dict[str, Any]:
     rating = observation.get("rating")
     review_count = observation.get("review_count")
     price_level = observation.get("price_level")
     checks = observation.get("condition_checks") or {}
     failed: list[str] = []
+    unavailable_reason = _opening_unavailable_reason(observation)
+    if unavailable_reason:
+        failed.append(unavailable_reason)
     if checks.get("rating") is False:
         failed.append(f"평점 {rating} < 최소 {parsed.min_rating}")
     elif rating is None:
@@ -1595,13 +1624,18 @@ def _observed_metric_judgment(observation: dict[str, Any], parsed: ParsedRequest
     if checks.get("price_level") is False:
         failed.append(f"가격대 {price_level} > 최대 {parsed.max_price_level}")
     observed = any(value is not None for value in [rating, review_count, price_level])
+    business_observed = observation.get("business_status_observed") is True
     return {
         "place_url": observation.get("place_url"),
         "place_name": observation.get("place_name"),
-        "status": "observed" if observed else "unknown",
+        "status": "observed" if observed or business_observed else "unknown",
         "rating": rating,
         "review_count": review_count,
         "price_level": price_level,
+        "business_status_observed": observation.get("business_status_observed"),
+        "opening_status": observation.get("opening_status"),
+        "is_currently_unavailable": observation.get("is_currently_unavailable"),
+        "is_today_closed": observation.get("is_today_closed"),
         "meets_conditions": False if failed else (True if observed else None),
         "reason": "; ".join(failed) if failed else ("관측된 지표는 요청 조건을 위반하지 않습니다." if observed else "장소 페이지에서 지표를 확인하지 못했습니다."),
     }
@@ -1723,6 +1757,10 @@ async def run_llm_kakao_metric_judgment(
             "rating": item.get("rating"),
             "review_count": item.get("review_count"),
             "price_level": item.get("price_level"),
+            "business_status_observed": item.get("business_status_observed"),
+            "opening_status": item.get("opening_status"),
+            "is_currently_unavailable": item.get("is_currently_unavailable"),
+            "is_today_closed": item.get("is_today_closed"),
             "evidence_text": item.get("evidence_text", "")[:1200],
             "message": item.get("message"),
         }
@@ -1867,6 +1905,18 @@ async def enrich_kakao_candidates_with_place_metrics(
                 if judgment.get("price_level") is not None:
                     candidate["price_level"] = judgment.get("price_level")
                     candidate["average_price"] = f"가격대 {judgment.get('price_level')}"
+                if judgment.get("opening_status"):
+                    opening_status = judgment.get("opening_status") or {}
+                    candidate["opening_status"] = opening_status
+                    candidate["business_status_observed"] = judgment.get("business_status_observed")
+                    candidate["is_currently_unavailable"] = judgment.get("is_currently_unavailable")
+                    candidate["is_today_closed"] = judgment.get("is_today_closed")
+                    operation = dict(candidate.get("operation") or {})
+                    if opening_status.get("today_hours"):
+                        operation["open_time"] = opening_status.get("today_hours")
+                    if opening_status.get("today_closed_text"):
+                        operation["rest_date"] = opening_status.get("today_closed_text")
+                    candidate["operation"] = operation
                 candidate.setdefault("score_reasons", [])
                 candidate["metric_enrichment_note"] = reason
         elif metric_conditions_requested:
