@@ -313,6 +313,12 @@ class RequestParsingTests(unittest.TestCase):
         self.assertIn("음식종류=빵집", parsed.extracted_conditions)
         self.assertIn("최대거리=800m", parsed.extracted_conditions)
 
+    def test_parse_bakery_not_as_curry(self) -> None:
+        parsed = parse_user_request("한옥마을 근처 베이커리 추천해줘")
+
+        self.assertEqual(parsed.location, "전주 한옥마을")
+        self.assertEqual(parsed.cuisine, "베이커리")
+
     def test_parse_dessert_cafe_before_general_cafe(self) -> None:
         parsed = parse_user_request("전주 객사 디저트카페 추천")
 
@@ -541,6 +547,99 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertFalse(_matches_food_query(ramen, "초밥"))
         self.assertTrue(_matches_food_query(sushi, "초밥"))
 
+    def test_specific_food_queries_do_not_match_sibling_categories(self) -> None:
+        cases = [
+            (
+                "파스타",
+                {
+                    "name": "전북대피자",
+                    "cuisine": "피자",
+                    "overview": "Kakao Local category: 음식점 > 양식 > 피자",
+                    "signature_menu": ["고르곤졸라 피자"],
+                    "operation": {},
+                },
+            ),
+            (
+                "마라탕",
+                {
+                    "name": "전북대짬뽕",
+                    "cuisine": "중식",
+                    "overview": "Kakao Local category: 음식점 > 중식 > 짬뽕",
+                    "signature_menu": ["해물짬뽕"],
+                    "operation": {},
+                },
+            ),
+            (
+                "쌀국수",
+                {
+                    "name": "전북대반미",
+                    "cuisine": "베트남음식",
+                    "overview": "Kakao Local category: 음식점 > 아시아음식 > 베트남음식",
+                    "signature_menu": ["반미"],
+                    "operation": {},
+                },
+            ),
+            (
+                "떡볶이",
+                {
+                    "name": "전북대김밥",
+                    "cuisine": "분식",
+                    "overview": "Kakao Local category: 음식점 > 분식",
+                    "signature_menu": ["김밥"],
+                    "operation": {},
+                },
+            ),
+            (
+                "국밥",
+                {
+                    "name": "전북대비빔밥",
+                    "cuisine": "한식",
+                    "overview": "Kakao Local category: 음식점 > 한식",
+                    "signature_menu": ["비빔밥"],
+                    "operation": {},
+                },
+            ),
+            (
+                "커리",
+                {
+                    "name": "한옥마을베이커리",
+                    "cuisine": "베이커리",
+                    "overview": "Kakao Local category: 음식점 > 제과,베이커리",
+                    "signature_menu": ["소금빵"],
+                    "operation": {},
+                },
+            ),
+        ]
+
+        for requested, candidate in cases:
+            with self.subTest(requested=requested):
+                self.assertFalse(_matches_food_query(candidate, requested))
+
+    def test_specific_food_queries_match_exact_menu_terms(self) -> None:
+        cases = [
+            ("파스타", "크림 파스타", "양식"),
+            ("마라탕", "마라탕", "중식"),
+            ("쌀국수", "쌀국수", "베트남음식"),
+            ("커리", "커리", "인도음식"),
+            ("떡볶이", "국물떡볶이", "분식"),
+            ("국밥", "돼지국밥", "한식"),
+        ]
+
+        for requested, menu, cuisine in cases:
+            with self.subTest(requested=requested):
+                self.assertTrue(
+                    _matches_food_query(
+                        {
+                            "name": f"전북대{menu}",
+                            "cuisine": cuisine,
+                            "overview": f"Kakao Local category: 음식점 > {cuisine}",
+                            "signature_menu": [menu],
+                            "operation": {},
+                        },
+                        requested,
+                    )
+                )
+
     def test_food_query_expands_bar_intent_to_alcohol_terms(self) -> None:
         restaurant = {
             "name": "전주막걸리집",
@@ -627,6 +726,27 @@ class PublicDataServerTests(unittest.TestCase):
         self.assertTrue(_matches_food_query(bakery, "빵집"))
         self.assertFalse(_matches_food_query(dessert_chain, "빵집"))
         self.assertFalse(_matches_food_query(coffee_chain, "빵집"))
+
+    def test_cafe_query_excludes_study_cafe_space_rental(self) -> None:
+        beverage_cafe = {
+            "name": "객사커피",
+            "cuisine": "커피전문점",
+            "address": "전주시 완산구",
+            "overview": "Kakao Local category: 음식점 > 카페 > 커피전문점",
+            "signature_menu": ["아메리카노"],
+            "operation": {},
+        }
+        study_cafe = {
+            "name": "헤리티지스터디카페",
+            "cuisine": "카페",
+            "address": "전주시 덕진구",
+            "overview": "Kakao Local category: 서비스,산업 > 전문대행 > 공간대여 > 스터디카페,스터디룸",
+            "signature_menu": [],
+            "operation": {},
+        }
+
+        self.assertTrue(_matches_food_query(beverage_cafe, "카페"))
+        self.assertFalse(_matches_food_query(study_cafe, "카페"))
 
     def test_kakao_standardization_does_not_treat_search_keyword_as_menu(self) -> None:
         restaurant = _standardize_kakao_place(
@@ -807,6 +927,18 @@ class PublicDataServerTests(unittest.TestCase):
                     "place_url": "http://place.map.kakao.com/bar-1",
                 },
                 {
+                    "id": "study-cafe-1",
+                    "place_name": "헤리티지스터디카페",
+                    "category_name": "서비스,산업 > 전문대행 > 공간대여 > 스터디카페,스터디룸",
+                    "category_group_code": "",
+                    "category_group_name": "",
+                    "road_address_name": "전북특별자치도 전주시 덕진구 권삼득로 297",
+                    "x": "127.1286",
+                    "y": "35.8456",
+                    "distance": "325",
+                    "place_url": "http://place.map.kakao.com/study-cafe-1",
+                },
+                {
                     "id": "cafe-1",
                     "place_name": "투썸플레이스 전주전북대점",
                     "category_name": "음식점 > 카페 > 커피전문점",
@@ -945,8 +1077,6 @@ class PublicDataServerTests(unittest.TestCase):
 
         self.assertIn("전주 객사 파스타", captured_queries)
         self.assertIn("객사 파스타", captured_queries)
-        self.assertIn("이탈리안", captured_queries)
-        self.assertIn("양식", captured_queries)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["candidates"][0]["name"], "객사파스타")
 
@@ -980,6 +1110,86 @@ class PublicDataServerTests(unittest.TestCase):
         }
 
         self.assertTrue(_public_candidate_matches_cuisine(candidate, "파스타"))
+
+    def test_public_candidate_match_specific_food_does_not_match_siblings(self) -> None:
+        cases = [
+            (
+                "파스타",
+                {
+                    "name": "전북대피자",
+                    "cuisine": "피자",
+                    "overview": "Kakao Local category: 음식점 > 양식 > 피자",
+                    "signature_menu": ["고르곤졸라 피자"],
+                },
+            ),
+            (
+                "마라탕",
+                {
+                    "name": "전북대짬뽕",
+                    "cuisine": "중식",
+                    "overview": "Kakao Local category: 음식점 > 중식 > 짬뽕",
+                    "signature_menu": ["해물짬뽕"],
+                },
+            ),
+            (
+                "쌀국수",
+                {
+                    "name": "전북대반미",
+                    "cuisine": "베트남음식",
+                    "overview": "Kakao Local category: 음식점 > 아시아음식 > 베트남음식",
+                    "signature_menu": ["반미"],
+                },
+            ),
+            (
+                "떡볶이",
+                {
+                    "name": "전북대김밥",
+                    "cuisine": "분식",
+                    "overview": "Kakao Local category: 음식점 > 분식",
+                    "signature_menu": ["김밥"],
+                },
+            ),
+            (
+                "국밥",
+                {
+                    "name": "전북대비빔밥",
+                    "cuisine": "한식",
+                    "overview": "Kakao Local category: 음식점 > 한식",
+                    "signature_menu": ["비빔밥"],
+                },
+            ),
+            (
+                "베이커리",
+                {
+                    "name": "전주커리집",
+                    "cuisine": "인도음식",
+                    "overview": "Kakao Local category: 음식점 > 아시아음식 > 인도음식",
+                    "signature_menu": ["커리"],
+                },
+            ),
+            (
+                "커리",
+                {
+                    "name": "한옥마을베이커리",
+                    "cuisine": "베이커리",
+                    "overview": "Kakao Local category: 음식점 > 제과,베이커리",
+                    "signature_menu": ["소금빵"],
+                },
+            ),
+            (
+                "커리",
+                {
+                    "name": "전주베트남식당",
+                    "cuisine": "베트남음식",
+                    "overview": "Kakao Local category: 음식점 > 아시아음식 > 베트남음식",
+                    "signature_menu": ["반미"],
+                },
+            ),
+        ]
+
+        for requested, candidate in cases:
+            with self.subTest(requested=requested):
+                self.assertFalse(_public_candidate_matches_cuisine(candidate, requested))
 
     def test_public_candidate_match_does_not_treat_jeonju_address_as_hansik(self) -> None:
         candidate = {

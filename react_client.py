@@ -497,7 +497,7 @@ def detect_cuisine(query: str) -> str | None:
         return "바"
     if _contains_bar_intent(query):
         return "술집"
-    for term in FOOD_QUERY_TERMS:
+    for term in sorted(FOOD_QUERY_TERMS, key=len, reverse=True):
         if term in query:
             return term
     match = re.search(r"([가-힣A-Za-z]+)\s*(?:맛집|음식점|식당|전문점)", query)
@@ -1119,7 +1119,7 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
     for term in FOOD_QUERY_TERMS:
         if cuisine in {"디저트카페", "디저트 카페"} and term == "카페":
             continue
-        if cuisine in term or term in cuisine:
+        if cuisine == term:
             terms.append(term)
     blob = " ".join(
         str(value)
@@ -1133,15 +1133,26 @@ def _public_candidate_matches_cuisine(candidate: dict[str, Any], cuisine: str) -
         ]
         if value
     )
-    if cuisine in {"빵집", "베이커리", "빵"} and any(term in blob for term in BAKERY_EXCLUDE_TERMS):
-        return False
+    if cuisine in {"빵집", "베이커리", "빵"}:
+        if any(term in blob for term in BAKERY_EXCLUDE_TERMS):
+            return False
+        bakery_signals = ["빵집", "베이커리", "제과", "제빵", "바게트", "크루아상", "소금빵", "케이크", "bakery", "BAKERY"]
+        return any(term in blob for term in bakery_signals) or bool(
+            re.search(r"(?<![가-힣A-Za-z])빵(?![가-힣A-Za-z])", blob)
+        )
     if cuisine == "바" and any(term in blob for term in ["식당", "분식", "한식", "중식", "일식", "고기", "냉면", "국밥"]):
         return any(term in blob for term in ["와인바", "칵테일바", "펍"])
     if cuisine == "술집" and re.search(r"(?<!전)주점", blob):
         return True
     if cuisine == "바" and re.search(r"(^|[^가-힣A-Za-z])바($|[^가-힣A-Za-z])", blob):
         return True
-    return any(term and term in blob for term in terms)
+    return any(term and _candidate_contains_food_match_term(blob, term) for term in terms)
+
+
+def _candidate_contains_food_match_term(blob: str, term: str) -> bool:
+    if term == "커리":
+        return term in blob.replace("베이커리", "")
+    return term in blob
 
 
 def _public_value(value: Any, fallback: str = "정보 없음") -> str:
